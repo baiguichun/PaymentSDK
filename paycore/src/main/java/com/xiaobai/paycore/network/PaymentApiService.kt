@@ -1,7 +1,10 @@
 package com.xiaobai.paycore.network
 
 import com.xiaobai.paycore.channel.PaymentChannelMeta
+import com.squareup.moshi.JsonAdapter
 import com.squareup.moshi.JsonClass
+import com.squareup.moshi.JsonReader
+import com.squareup.moshi.JsonWriter
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
@@ -27,16 +30,17 @@ class PaymentApiService(
     private val api: PaymentApi
 
     init {
-        val safeTimeout = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().toLong()
-        val client = OkHttpClient.Builder()
-            .connectTimeout(safeTimeout, TimeUnit.MILLISECONDS)
-            .readTimeout(safeTimeout, TimeUnit.MILLISECONDS)
-            .writeTimeout(safeTimeout, TimeUnit.MILLISECONDS)
-            .build()
+    val safeTimeout = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().toLong()
+    val client = OkHttpClient.Builder()
+        .connectTimeout(safeTimeout, TimeUnit.MILLISECONDS)
+        .readTimeout(safeTimeout, TimeUnit.MILLISECONDS)
+        .writeTimeout(safeTimeout, TimeUnit.MILLISECONDS)
+        .build()
 
-        val moshi = Moshi.Builder()
-            .add(KotlinJsonAdapterFactory())
-            .build()
+    val moshi = Moshi.Builder()
+        .add(AnyJsonAdapterFactory)
+        .add(KotlinJsonAdapterFactory())
+        .build()
 
         api = Retrofit.Builder()
             .baseUrl(baseUrl.ensureTrailingSlash())
@@ -164,7 +168,7 @@ private data class ChannelDto(
     val channelName: String,
     val enabled: Boolean,
     val iconUrl: String? = null,
-    val extraConfig: Map<String, Any>? = emptyMap()
+    val extraConfig: Map<String, Any?>? = emptyMap()
 )
 
 @JsonClass(generateAdapter = true)
@@ -172,7 +176,7 @@ private data class CreateOrderRequest(
     val orderId: String,
     val channelId: String,
     val amount: String,
-    val extraParams: Map<String, Any>? = emptyMap()
+    val extraParams: Map<String, Any?>? = emptyMap()
 )
 
 @JsonClass(generateAdapter = true)
@@ -202,3 +206,80 @@ data class OrderStatusInfo(
 
 private fun String.ensureTrailingSlash(): String =
     if (this.endsWith("/")) this else "$this/"
+
+/**
+ * 为 Map<String, Any?> / List<Any?> / Any? 提供通用适配器，支持动态字段解析。
+ */
+private object AnyJsonAdapterFactory : JsonAdapter.Factory {
+    override fun create(
+        type: java.lang.reflect.Type,
+        annotations: MutableSet<out Annotation>,
+        moshi: Moshi
+    ): JsonAdapter<*>? {
+        return if (type == Any::class.java) {
+            AnyJsonAdapter(moshi).nullSafe()
+        } else {
+            null
+        }
+    }
+}
+
+private class AnyJsonAdapter(private val moshi: Moshi) : JsonAdapter<Any>() {
+    override fun fromJson(reader: JsonReader): Any? {
+        return when (reader.peek()) {
+            JsonReader.Token.BEGIN_OBJECT -> {
+                val map = mutableMapOf<String, Any?>()
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    val name = reader.nextName()
+                    map[name] = fromJson(reader)
+                }
+                reader.endObject()
+                map
+            }
+            JsonReader.Token.BEGIN_ARRAY -> {
+                val list = mutableListOf<Any?>()
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    list.add(fromJson(reader))
+                }
+                reader.endArray()
+                list
+            }
+            JsonReader.Token.STRING -> reader.nextString()
+            JsonReader.Token.NUMBER -> reader.nextDouble()
+            JsonReader.Token.BOOLEAN -> reader.nextBoolean()
+            JsonReader.Token.NULL -> {
+                reader.nextNull<Unit>()
+                null
+            }
+            else -> throw IllegalStateException("Unexpected token: ${reader.peek()}")
+        }
+    }
+
+    override fun toJson(writer: JsonWriter, value: Any?) {
+        when (value) {
+            null -> writer.nullValue()
+            is Map<*, *> -> {
+                writer.beginObject()
+                value.entries.forEach { entry ->
+                    val key = entry.key
+                    if (key is String) {
+                        writer.name(key)
+                        toJson(writer, entry.value)
+                    }
+                }
+                writer.endObject()
+            }
+            is Iterable<*> -> {
+                writer.beginArray()
+                value.forEach { item -> toJson(writer, item) }
+                writer.endArray()
+            }
+            is Number -> writer.value(value)
+            is Boolean -> writer.value(value)
+            is String -> writer.value(value)
+            else -> writer.value(value.toString())
+        }
+    }
+}
