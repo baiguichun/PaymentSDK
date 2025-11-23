@@ -365,7 +365,7 @@ class Builder {
 | `apiBaseUrl` | String | 必填 | API基础URL |
 | `debugMode` | Boolean | false | 调试模式 |
 | `networkTimeout` | Long | 30 | 预留配置，当前实现使用固定10s HTTP超时 |
-| `initialQueryDelayMs` | Long | 3000 | 预留配置，自动查询使用固定200ms延迟 |
+| `initialQueryDelayMs` | Long | 3000 | 自动查询前的等待时间（毫秒） |
 | `maxQueryRetries` | Int | 3 | 最大查询重试次数 |
 | `queryIntervalMs` | Long | 2000 | 查询间隔（毫秒） |
 | `queryTimeoutMs` | Long | 10000 | 查询超时时间（毫秒） |

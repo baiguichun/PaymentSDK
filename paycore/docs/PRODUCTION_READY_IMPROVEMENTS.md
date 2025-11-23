@@ -450,9 +450,9 @@ onPause: hasLeftApp = true（记录用户离开）
     ↓
 onResume: 检测到 hasLeftApp = true
     ↓
-delay(200ms)：等待第三方回调
+delay(initialQueryDelayMs)：等待第三方回调/结果同步
     ↓
-自动查询后端：queryOrderStatus()
+自动查询后端：queryOrderStatus()（使用配置的重试/超时）
     ↓
 返回结果：PaymentResult.Success/Failed
     ↓
@@ -472,9 +472,15 @@ onDestroy: activityScope.cancel()（清理协程）
 
 ---
 
-## 4. Kotlin 协程并发管理
+## 4. 网络与并发管理
 
-### 📊 实际应用示例
+### 📡 网络层
+
+- 使用 Retrofit + OkHttp，连接/读/写超时均遵循 `networkTimeout` 配置。
+- 字符串响应（ScalarsConverter）后使用现有 JSON 解析逻辑构建模型。
+- URL 参数在 Retrofit 层自动编码，避免特殊字符导致请求非法。
+
+### 📊 协程应用示例
 
 #### 1. Activity 协程管理
 

@@ -5,9 +5,7 @@ plugins {
 
 android {
     namespace = "com.xiaobai.paycore"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 34
 
     defaultConfig {
         minSdk = 24
@@ -52,6 +50,11 @@ dependencies {
 
     // JSON解析
     implementation("org.json:json:20250517")
+
+    // Network
+    implementation("com.squareup.retrofit2:retrofit:2.11.0")
+    implementation("com.squareup.retrofit2:converter-scalars:2.11.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Testing
     testImplementation(libs.junit)

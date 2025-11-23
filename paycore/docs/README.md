@@ -263,7 +263,7 @@ SDK 在调起支付后会自动监听用户返回并查询后端，无需手动�
     ↓
 用户完成支付返回 → onResume → 检测到返回
     ↓
-延迟200ms（等待第三方同步结果） → 查询后端
+延迟 initialQueryDelayMs（配置项，默认3000ms）等待第三方同步结果 → 查询后端
     ↓
 在最大重试次数或查询超时内轮询 → 返回最终结果
 ```
@@ -272,6 +272,7 @@ SDK 在调起支付后会自动监听用户返回并查询后端，无需手动�
 - 同一订单的并发查询会复用同一个协程（`activeQueries`），避免重复请求
 - 查询完成后自动清理，避免内存泄漏
 - 解析渠道/订单响应失败会直接返回 `Result.failure`，业务可据此提示用户
+- 网络超时遵循 `networkTimeout` 配置，避免硬编码 10s
 
 **配置参数：**
 ```kotlin
@@ -282,7 +283,7 @@ val config = PaymentConfig.Builder()
     .build()
 ```
 
-> `initialQueryDelayMs` 目前作为预留配置，自动查询流程使用固定 200ms 延迟。
+> `initialQueryDelayMs` 可配置自动查询前的等待时间（默认 3000ms）。
 
 **支付结果状态：**
 - `PaymentResult.Success` - 支付成功（后端已确认）

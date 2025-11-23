@@ -231,8 +231,8 @@ class PaymentLifecycleActivity : Activity() {
         queryJob?.cancel()
         queryJob = activityScope.launch {
             try {
-                // 延迟一小段时间，确保支付结果已经同步到后端
-                delay(200)
+                // 延迟配置的时间，确保支付结果同步到后端
+                delay(PaymentSDK.getConfig().initialQueryDelayMs)
                 
                 if (PaymentSDK.getConfig().debugMode) {
                     println("开始查询订单状态: $orderId")

@@ -136,6 +136,8 @@ object PaymentLockManager {
             timeoutJobs.values.forEach { it.cancel() }
             timeoutJobs.clear()
         }
+        // 取消仍在运行的超时协程
+        timeoutScope.coroutineContext.cancelChildren()
     }
     
     /**
@@ -169,4 +171,3 @@ object PaymentLockManager {
  * 订单正在支付中异常
  */
 class OrderAlreadyPayingException(message: String) : Exception(message)
-
