@@ -1,13 +1,12 @@
 package com.xiaobai.paycore.network
 
 import com.xiaobai.paycore.channel.PaymentChannelMeta
+import com.squareup.moshi.JsonClass
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.RequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
@@ -18,16 +17,12 @@ import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 
 /**
- * 支付API服务（Retrofit 版本）
- *
- * 负责与后端通信，获取支付渠道配置等信息
+ * 支付API服务（Retrofit + Moshi 自动解析）
  */
 class PaymentApiService(
-    private val baseUrl: String,
+    baseUrl: String,
     timeoutMs: Long
 ) {
-
-    private val jsonMediaType = "application/json".toMediaType()
 
     private val api: PaymentApi
 
@@ -39,10 +34,14 @@ class PaymentApiService(
             .writeTimeout(safeTimeout, TimeUnit.MILLISECONDS)
             .build()
 
+        val moshi = Moshi.Builder()
+            .add(KotlinJsonAdapterFactory())
+            .build()
+
         api = Retrofit.Builder()
             .baseUrl(baseUrl.ensureTrailingSlash())
             .client(client)
-            .addConverterFactory(MoshiConverterFactory.create())
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(PaymentApi::class.java)
     }
@@ -56,7 +55,20 @@ class PaymentApiService(
     ): Result<List<PaymentChannelMeta>> = withContext(Dispatchers.IO) {
         try {
             val response = api.getPaymentChannels(businessLine, appId)
-            handleResponse(response) { body -> parseChannelsResponse(body) }
+            handleResponse(response) { body ->
+                body.data
+                    ?.filter { it.enabled }
+                    ?.map { dto ->
+                        PaymentChannelMeta(
+                            channelId = dto.channelId,
+                            channelName = dto.channelName,
+                            enabled = dto.enabled,
+                            iconUrl = dto.iconUrl,
+                            extraConfig = dto.extraConfig ?: emptyMap()
+                        )
+                    }
+                    ?: emptyList()
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -72,17 +84,14 @@ class PaymentApiService(
         extraParams: Map<String, Any> = emptyMap()
     ): Result<Map<String, Any>> = withContext(Dispatchers.IO) {
         try {
-            val requestBody = JSONObject().apply {
-                put("orderId", orderId)
-                put("channelId", channelId)
-                put("amount", amount)
-                if (extraParams.isNotEmpty()) {
-                    put("extraParams", JSONObject(extraParams))
-                }
-            }.toString().toRequestBody(jsonMediaType)
-
-            val response = api.createPaymentOrder(requestBody)
-            handleResponse(response) { body -> parseCreateOrderResponse(body) }
+            val req = CreateOrderRequest(
+                orderId = orderId,
+                channelId = channelId,
+                amount = amount,
+                extraParams = extraParams
+            )
+            val response = api.createPaymentOrder(req)
+            handleResponse(response) { it.data ?: emptyMap() }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -97,90 +106,25 @@ class PaymentApiService(
     ): Result<OrderStatusInfo> = withContext(Dispatchers.IO) {
         try {
             val response = api.queryOrderStatus(orderId, paymentId)
-            handleResponse(response) { body -> parseOrderStatusResponse(body) }
+            handleResponse(response) { body ->
+                body.data ?: throw Exception("解析订单状态响应失败: data 为空")
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    // region Parsing helpers
-    private fun parseChannelsResponse(jsonString: String): List<PaymentChannelMeta> {
-        val channels = mutableListOf<PaymentChannelMeta>()
-        val jsonObject = JSONObject(jsonString)
-        val dataArray = jsonObject.getJSONArray("data")
-
-        for (i in 0 until dataArray.length()) {
-            val channelJson = dataArray.getJSONObject(i)
-
-            val extraConfig = mutableMapOf<String, Any>()
-            if (channelJson.has("extraConfig")) {
-                val extraConfigJson = channelJson.getJSONObject("extraConfig")
-                extraConfigJson.keys().forEach { key ->
-                    extraConfig[key] = extraConfigJson.get(key)
-                }
-            }
-
-            val channel = PaymentChannelMeta(
-                channelId = channelJson.getString("channelId"),
-                channelName = channelJson.getString("channelName"),
-                enabled = channelJson.getBoolean("enabled"),
-                iconUrl = channelJson.optString("iconUrl", null),
-                extraConfig = extraConfig
-            )
-
-            if (channel.enabled) {
-                channels.add(channel)
-            }
-        }
-
-        return channels
-    }
-
-    private fun parseCreateOrderResponse(jsonString: String): Map<String, Any> {
-        val params = mutableMapOf<String, Any>()
-        val jsonObject = JSONObject(jsonString)
-        val dataObject = jsonObject.getJSONObject("data")
-
-        dataObject.keys().forEach { key ->
-            params[key] = dataObject.get(key)
-        }
-
-        return params
-    }
-
-    private fun parseOrderStatusResponse(jsonString: String): OrderStatusInfo {
-        try {
-            val jsonObject = JSONObject(jsonString)
-            val dataObject = jsonObject.getJSONObject("data")
-
-            return OrderStatusInfo(
-                orderId = dataObject.getString("orderId"),
-                paymentId = dataObject.optString("paymentId", null),
-                channelId = dataObject.optString("channelId", null),
-                channelName = dataObject.optString("channelName", null),
-                amount = dataObject.optString("amount", null),
-                status = dataObject.getString("status"),
-                transactionId = dataObject.optString("transactionId", null),
-                paidTime = dataObject.optLong("paidTime", 0),
-                createTime = dataObject.optLong("createTime", 0)
-            )
-        } catch (e: Exception) {
-            throw Exception("解析订单状态响应失败: ${e.message}")
-        }
-    }
-    // endregion
-
-    private fun <T> handleResponse(
-        response: Response<String>,
-        parser: (String) -> T
-    ): Result<T> {
+    private fun <T, R> handleResponse(
+        response: Response<T>,
+        mapper: (T) -> R
+    ): Result<R> {
         if (!response.isSuccessful) {
             return Result.failure(Exception("HTTP Error: ${response.code()}"))
         }
         val body = response.body()
         return if (body != null) {
             try {
-                Result.success(parser(body))
+                Result.success(mapper(body))
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -195,19 +139,51 @@ private interface PaymentApi {
     suspend fun getPaymentChannels(
         @Query("businessLine") businessLine: String,
         @Query("appId") appId: String
-    ): Response<String>
+    ): Response<ChannelsResponse>
 
     @POST("api/payment/create")
     suspend fun createPaymentOrder(
-        @Body body: RequestBody
-    ): Response<String>
+        @Body body: CreateOrderRequest
+    ): Response<CreateOrderResponse>
 
     @GET("api/payment/order/status")
     suspend fun queryOrderStatus(
         @Query("orderId") orderId: String,
         @Query("paymentId") paymentId: String?
-    ): Response<String>
+    ): Response<OrderStatusResponse>
 }
+
+@JsonClass(generateAdapter = true)
+private data class ChannelsResponse(
+    val data: List<ChannelDto>?
+)
+
+@JsonClass(generateAdapter = true)
+private data class ChannelDto(
+    val channelId: String,
+    val channelName: String,
+    val enabled: Boolean,
+    val iconUrl: String? = null,
+    val extraConfig: Map<String, Any>? = emptyMap()
+)
+
+@JsonClass(generateAdapter = true)
+private data class CreateOrderRequest(
+    val orderId: String,
+    val channelId: String,
+    val amount: String,
+    val extraParams: Map<String, Any>? = emptyMap()
+)
+
+@JsonClass(generateAdapter = true)
+private data class CreateOrderResponse(
+    val data: Map<String, Any>?
+)
+
+@JsonClass(generateAdapter = true)
+private data class OrderStatusResponse(
+    val data: OrderStatusInfo?
+)
 
 /**
  * 订单状态信息
