@@ -53,7 +53,10 @@ object PaymentSDK {
         
         this.application = app
         this.config = config
-        this.apiService = PaymentApiService(config.apiBaseUrl)
+        this.apiService = PaymentApiService(
+            baseUrl = config.apiBaseUrl,
+            timeoutMs = config.networkTimeout * 1000
+        )
         
         // 设置订单锁超时回调（用于日志记录）
         PaymentLockManager.setOnTimeoutCallback { orderId ->
@@ -428,7 +431,7 @@ object PaymentSDK {
      */
     fun getPaymentStatus(): String {
         val payingOrders = PaymentLockManager.getPayingOrders()
-        val queryingOrders = activeQueries.keys()
+        val queryingOrders = activeQueries.keys.toList() // 拍快照避免遍历过程中修改
         
         return buildString {
             appendLine("=== 支付状态 ===")
@@ -437,7 +440,7 @@ object PaymentSDK {
             appendLine()
             appendLine("=== 查询状态 ===")
             appendLine("正在查询订单数: ${queryingOrders.size}")
-            appendLine("正在查询订单: ${queryingOrders.toList().joinToString()}")
+            appendLine("正在查询订单: ${queryingOrders.joinToString()}")
         }
     }
     
@@ -493,4 +496,3 @@ sealed class PaymentResult {
      */
     data class Processing(val message: String) : PaymentResult()
 }
-

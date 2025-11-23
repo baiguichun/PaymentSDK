@@ -472,7 +472,15 @@ onDestroy: activityScope.cancel()（清理协程）
 
 ---
 
-## 4. Kotlin 协程并发管理
+## 4. 网络层
+
+- 使用 Retrofit + OkHttp，连接/读/写超时遵循 `networkTimeout` 配置。
+- 采用 ScalarsConverter 获取原始 JSON 字符串，再用 JSONObject 解析，兼容动态字段（如 extraConfig、extraParams）。
+- URL 参数在调用前编码，避免特殊字符导致请求非法。
+
+---
+
+## 5. Kotlin 协程并发管理
 
 ### 📊 实际应用示例
 

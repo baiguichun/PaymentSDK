@@ -3,98 +3,67 @@ package com.xiaobai.paycore.network
 import com.xiaobai.paycore.channel.PaymentChannelMeta
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import retrofit2.Response
+import retrofit2.Retrofit
+import retrofit2.converter.scalars.ScalarsConverterFactory
+import retrofit2.http.Body
+import retrofit2.http.GET
+import retrofit2.http.POST
+import retrofit2.http.Query
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 /**
- * 支付API服务
- * 
- * 负责与后端通信，获取支付渠道配置等信息
+ * 支付API服务（Retrofit + 手动JSON解析）
  */
-class PaymentApiService(private val baseUrl: String) {
-    
+class PaymentApiService(
+    baseUrl: String,
+    timeoutMs: Long
+) {
+
+    private val api: PaymentApi
+
+    init {
+        val safeTimeout = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().toLong()
+        val client = OkHttpClient.Builder()
+            .connectTimeout(safeTimeout, TimeUnit.MILLISECONDS)
+            .readTimeout(safeTimeout, TimeUnit.MILLISECONDS)
+            .writeTimeout(safeTimeout, TimeUnit.MILLISECONDS)
+            .build()
+
+        api = Retrofit.Builder()
+            .baseUrl(baseUrl.ensureTrailingSlash())
+            .client(client)
+            .addConverterFactory(ScalarsConverterFactory.create())
+            .build()
+            .create(PaymentApi::class.java)
+    }
+
     /**
      * 获取指定业务线的支付渠道配置
-     * 
-     * @param businessLine 业务线标识
-     * @param appId 应用ID
-     * @return 支付渠道元数据列表
      */
     suspend fun getPaymentChannels(
         businessLine: String,
         appId: String
     ): Result<List<PaymentChannelMeta>> = withContext(Dispatchers.IO) {
         try {
-            val url = URL("$baseUrl/api/payment/channels?businessLine=$businessLine&appId=$appId")
-            val connection = url.openConnection() as HttpURLConnection
-            
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Content-Type", "application/json")
-            
-            val responseCode = connection.responseCode
-            
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                val response = reader.use { it.readText() }
-                
-                val channels = parseChannelsResponse(response)
-                Result.success(channels)
-            } else {
-                Result.failure(Exception("HTTP Error: $responseCode"))
-            }
+            val response = api.getPaymentChannels(
+                businessLine = businessLine.urlEncoded(),
+                appId = appId.urlEncoded()
+            )
+            handleResponse(response) { body -> parseChannelsResponse(body) }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
-    
-    /**
-     * 解析渠道配置响应
-     */
-    private fun parseChannelsResponse(jsonString: String): List<PaymentChannelMeta> {
-        val channels = mutableListOf<PaymentChannelMeta>()
-        val jsonObject = JSONObject(jsonString)
-        val dataArray = jsonObject.getJSONArray("data")
-        
-        for (i in 0 until dataArray.length()) {
-            val channelJson = dataArray.getJSONObject(i)
-            
-            val extraConfig = mutableMapOf<String, Any>()
-            if (channelJson.has("extraConfig")) {
-                val extraConfigJson = channelJson.getJSONObject("extraConfig")
-                extraConfigJson.keys().forEach { key ->
-                    extraConfig[key] = extraConfigJson.get(key)
-                }
-            }
-            
-            val channel = PaymentChannelMeta(
-                channelId = channelJson.getString("channelId"),
-                channelName = channelJson.getString("channelName"),
-                enabled = channelJson.getBoolean("enabled"),
-                iconUrl = channelJson.optString("iconUrl", null),
-                extraConfig = extraConfig
-            )
-            
-            if (channel.enabled) {
-                channels.add(channel)
-            }
-        }
-        
-        return channels
-    }
-    
+
     /**
      * 创建支付订单
-     * 
-     * @param orderId 订单ID
-     * @param channelId 支付渠道ID
-     * @param amount 金额
-     * @param extraParams 额外参数
-     * @return 支付参数（用于调起第三方支付）
      */
     suspend fun createPaymentOrder(
         orderId: String,
@@ -103,104 +72,90 @@ class PaymentApiService(private val baseUrl: String) {
         extraParams: Map<String, Any> = emptyMap()
     ): Result<Map<String, Any>> = withContext(Dispatchers.IO) {
         try {
-            val url = URL("$baseUrl/api/payment/create")
-            val connection = url.openConnection() as HttpURLConnection
-            
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.doOutput = true
-            
-            // 构建请求体
             val requestBody = JSONObject().apply {
                 put("orderId", orderId)
                 put("channelId", channelId)
                 put("amount", amount)
-                
                 if (extraParams.isNotEmpty()) {
                     put("extraParams", JSONObject(extraParams))
                 }
-            }
-            
-            connection.outputStream.use { os ->
-                os.write(requestBody.toString().toByteArray())
-            }
-            
-            val responseCode = connection.responseCode
-            
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                val response = reader.use { it.readText() }
-                
-                val paymentParams = parseCreateOrderResponse(response)
-                Result.success(paymentParams)
-            } else {
-                Result.failure(Exception("HTTP Error: $responseCode"))
-            }
+            }.toString().toRequestBody(JSON_MEDIA_TYPE)
+
+            val response = api.createPaymentOrder(requestBody)
+            handleResponse(response) { body -> parseCreateOrderResponse(body) }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
-    
-    private fun parseCreateOrderResponse(jsonString: String): Map<String, Any> {
-        val params = mutableMapOf<String, Any>()
-        val jsonObject = JSONObject(jsonString)
-        val dataObject = jsonObject.getJSONObject("data")
-        
-        dataObject.keys().forEach { key ->
-            params[key] = dataObject.get(key)
-        }
-        
-        return params
-    }
-    
+
     /**
      * 查询订单支付状态
-     * 
-     * @param orderId 订单ID
-     * @param paymentId 支付订单ID（可选）
-     * @return 订单状态信息
      */
     suspend fun queryOrderStatus(
         orderId: String,
         paymentId: String? = null
     ): Result<OrderStatusInfo> = withContext(Dispatchers.IO) {
         try {
-            val urlBuilder = StringBuilder("$baseUrl/api/payment/order/status?orderId=$orderId")
-            if (paymentId != null) {
-                urlBuilder.append("&paymentId=$paymentId")
-            }
-            
-            val url = URL(urlBuilder.toString())
-            val connection = url.openConnection() as HttpURLConnection
-            
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Content-Type", "application/json")
-            
-            val responseCode = connection.responseCode
-            
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                val response = reader.use { it.readText() }
-                
-                val orderStatus = parseOrderStatusResponse(response)
-                Result.success(orderStatus)
-            } else {
-                Result.failure(Exception("HTTP Error: $responseCode"))
-            }
+            val response = api.queryOrderStatus(
+                orderId = orderId.urlEncoded(),
+                paymentId = paymentId?.urlEncoded()
+            )
+            handleResponse(response) { body -> parseOrderStatusResponse(body) }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
-    
+
+    // region Parsing helpers
+    private fun parseChannelsResponse(jsonString: String): List<PaymentChannelMeta> {
+        val channels = mutableListOf<PaymentChannelMeta>()
+        val jsonObject = JSONObject(jsonString)
+        val dataArray = jsonObject.getJSONArray("data")
+
+        for (i in 0 until dataArray.length()) {
+            val channelJson = dataArray.getJSONObject(i)
+
+            val extraConfig = mutableMapOf<String, Any>()
+            if (channelJson.has("extraConfig")) {
+                val extraConfigJson = channelJson.getJSONObject("extraConfig")
+                extraConfigJson.keys().forEach { key ->
+                    extraConfig[key] = extraConfigJson.get(key)
+                }
+            }
+
+            val channel = PaymentChannelMeta(
+                channelId = channelJson.getString("channelId"),
+                channelName = channelJson.getString("channelName"),
+                enabled = channelJson.getBoolean("enabled"),
+                iconUrl = channelJson.optString("iconUrl", null),
+                extraConfig = extraConfig
+            )
+
+            if (channel.enabled) {
+                channels.add(channel)
+            }
+        }
+
+        return channels
+    }
+
+    private fun parseCreateOrderResponse(jsonString: String): Map<String, Any> {
+        val params = mutableMapOf<String, Any>()
+        val jsonObject = JSONObject(jsonString)
+        val dataObject = jsonObject.getJSONObject("data")
+
+        dataObject.keys().forEach { key ->
+            params[key] = dataObject.get(key)
+        }
+
+        return params
+    }
+
     private fun parseOrderStatusResponse(jsonString: String): OrderStatusInfo {
         try {
             val jsonObject = JSONObject(jsonString)
             val dataObject = jsonObject.getJSONObject("data")
-            
+
             return OrderStatusInfo(
                 orderId = dataObject.getString("orderId"),
                 paymentId = dataObject.optString("paymentId", null),
@@ -216,6 +171,49 @@ class PaymentApiService(private val baseUrl: String) {
             throw Exception("解析订单状态响应失败: ${e.message}")
         }
     }
+    // endregion
+
+    private fun <R> handleResponse(
+        response: Response<String>,
+        parser: (String) -> R
+    ): Result<R> {
+        if (!response.isSuccessful) {
+            return Result.failure(Exception("HTTP Error: ${response.code()}"))
+        }
+        val body = response.body()
+        return if (body != null) {
+            try {
+                Result.success(parser(body))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        } else {
+            Result.failure(Exception("Empty response body"))
+        }
+    }
+
+    companion object {
+        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+    }
+}
+
+private interface PaymentApi {
+    @GET("api/payment/channels")
+    suspend fun getPaymentChannels(
+        @Query("businessLine") businessLine: String,
+        @Query("appId") appId: String
+    ): Response<String>
+
+    @POST("api/payment/create")
+    suspend fun createPaymentOrder(
+        @Body body: RequestBody
+    ): Response<String>
+
+    @GET("api/payment/order/status")
+    suspend fun queryOrderStatus(
+        @Query("orderId") orderId: String,
+        @Query("paymentId") paymentId: String?
+    ): Response<String>
 }
 
 /**
@@ -232,3 +230,8 @@ data class OrderStatusInfo(
     val paidTime: Long,
     val createTime: Long
 )
+
+private fun String.ensureTrailingSlash(): String =
+    if (this.endsWith("/")) this else "$this/"
+
+private fun String.urlEncoded(): String = URLEncoder.encode(this, "UTF-8")

@@ -252,6 +252,7 @@ fun checkMultipleApps(
 - 获取支付渠道配置
 - 创建支付订单
 - 查询订单状态
+- 基于 Retrofit + OkHttp 调用，使用 Scalars 转换器获取原始字符串，再用 JSONObject 解析，兼容动态字段（如 extraConfig）
 - 保证解析异常直接抛出，调用方可收到 `Result.failure` 处理
 
 **关键方法：**
