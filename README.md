@@ -232,6 +232,8 @@ class CustomPayChannel : IPaymentChannel {
 - ✅ 自动释放资源防止泄漏
 - ✅ 完整的异常处理（含后端响应解析失败直接返回错误）
 - ✅ 支付流程被系统回收时兜底回调失败，避免回调悬挂
+- ✅ 可选请求签名/响应验签（HMAC-SHA256 + 时间戳/随机数）防篡改与重放
+- ✅ 可选 HTTPS 证书绑定（Certificate Pinning）
 
 ## ⚡ 性能优化
 

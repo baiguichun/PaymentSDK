@@ -352,6 +352,7 @@ class Builder {
     fun setQueryIntervalMs(intervalMs: Long): Builder
     fun setQueryTimeoutMs(timeoutMs: Long): Builder
     fun setOrderLockTimeoutMs(timeoutMs: Long): Builder
+    fun setSecurityConfig(config: SecurityConfig): Builder
     fun build(): PaymentConfig
 }
 ```
@@ -370,6 +371,7 @@ class Builder {
 | `queryIntervalMs` | Long | 2000 | 查询间隔（毫秒） |
 | `queryTimeoutMs` | Long | 10000 | 查询超时时间（毫秒） |
 | `orderLockTimeoutMs` | Long | 300000 | 订单锁超时时间（毫秒），默认5分钟，超过此时间自动释放锁 |
+| `securityConfig` | SecurityConfig | 默认关闭 | 安全配置：请求签名/验签、时间戳/随机数、防重放、证书Pinning |
 
 **示例：**
 ```kotlin
@@ -382,8 +384,44 @@ val config = PaymentConfig.Builder()
     .setQueryIntervalMs(2000)
     .setQueryTimeoutMs(10000)
     .setOrderLockTimeoutMs(300000)
+    .setSecurityConfig(
+        SecurityConfig(
+            enableSignature = true,
+            enableResponseVerification = true,
+            signingSecret = "shared_secret_from_server",
+            enableCertificatePinning = true,
+            certificatePins = mapOf(
+                "api.example.com" to listOf("sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            )
+        )
+    )
     .build()
 ```
+
+### SecurityConfig
+
+安全相关配置。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----|------|--------|------|
+| `enableSignature` | Boolean | false | 启用请求签名（HMAC-SHA256） |
+| `signingSecret` | String? | null | 签名密钥，开启签名时必填 |
+| `signatureHeader` | String | `X-Signature` | 请求签名头 |
+| `timestampHeader` | String | `X-Timestamp` | 请求时间戳头（毫秒） |
+| `nonceHeader` | String | `X-Nonce` | 请求随机数头 |
+| `enableResponseVerification` | Boolean | false | 启用响应验签 |
+| `serverSignatureHeader` | String | `X-Server-Signature` | 响应签名头 |
+| `serverTimestampHeader` | String | `X-Server-Timestamp` | 响应时间戳头 |
+| `maxServerClockSkewMs` | Long | 300000 | 允许的服务端时间偏差（毫秒） |
+| `enableCertificatePinning` | Boolean | false | 启用 HTTPS 证书绑定 |
+| `certificatePins` | Map<String, List<String>> | 空 | 证书指纹配置：host -> pins（如 `sha256/xxxx`） |
+
+**签名/验签规范（默认实现）：**
+- 请求 canonical string：`path + "\n" + sortedQuery + "\n" + body + "\n" + timestamp + "\n" + nonce`  
+  其中 `sortedQuery` 为 key 升序、去除 null 的 `k=v&...`，`body` 为原始字符串（为空则空串）。
+- 请求头：`X-Signature`（Base64(HMAC-SHA256)）、`X-Timestamp`（毫秒）、`X-Nonce`（16字节随机数Base64）。
+- 可选响应验签：`path + "\n" + sortedQuery + "\n" + body + "\n" + serverTimestamp`，对比 `X-Server-Signature`。
+- 防重放：依赖服务端校验时间戳/随机数及可选缓存窗口。
 
 ---
 

@@ -33,6 +33,18 @@ class MyApplication : Application() {
             .setBusinessLine("retail") // 业务线标识
             .setApiBaseUrl("https://api.example.com")
             .setDebugMode(BuildConfig.DEBUG)
+            // 可选：开启签名/验签 + 证书Pinning
+            .setSecurityConfig(
+                SecurityConfig(
+                    enableSignature = true,
+                    enableResponseVerification = true,
+                    signingSecret = "shared_secret_from_server",
+                    enableCertificatePinning = true,
+                    certificatePins = mapOf(
+                        "api.example.com" to listOf("sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                    )
+                )
+            )
             .build()
         
         // 初始化

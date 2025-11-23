@@ -391,37 +391,31 @@ POST /api/payment/refund
 
 ## 安全规范
 
-### 1. 签名验证
+### 1. 签名与防重放
 
-所有请求建议使用签名验证，防止数据篡改。
+建议所有接口开启签名验证与时间戳/随机数防重放。
 
-**签名算法：**
-```
-sign = MD5(key1=value1&key2=value2&...&key=api_secret)
-```
+**请求规范：**
+- 头部：`X-Signature`（Base64(HMAC-SHA256)）、`X-Timestamp`（毫秒）、`X-Nonce`（16字节随机数Base64）
+- canonical string：`path + "\n" + sortedQuery + "\n" + body + "\n" + timestamp + "\n" + nonce`
+  - `path` 示例：`api/payment/create`
+  - `sortedQuery`：按 key 升序拼接 `k=v&...`，过滤 null
+  - `body`：原始请求体字符串（为空则空串）
+  - `timestamp`：请求头中的毫秒时间戳
+  - `nonce`：请求头中的随机数
+- 计算：`sign = Base64(HMAC-SHA256(canonicalString, signingSecret))`
+- 服务端校验：签名、时间戳窗口（建议 ≤5 分钟）、nonce 唯一性（缓存/数据库去重）
 
-**示例：**
-```python
-# 待签名参数
-params = {
-    "orderId": "ORDER_001",
-    "amount": "99.99",
-    "channelId": "wechat_pay"
-}
+**响应验签（可选）：**
+- 头部：`X-Server-Signature`、`X-Server-Timestamp`
+- canonical string：`path + "\n" + sortedQuery + "\n" + body + "\n" + serverTimestamp`
+- 客户端用同一 secret 校验，时间戳偏差大于配置值（默认5分钟）则拒绝。
 
-# 按key排序并拼接
-sorted_params = sorted(params.items())
-sign_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-sign_str += f"&key={api_secret}"
-
-# 计算签名
-import hashlib
-sign = hashlib.md5(sign_str.encode()).hexdigest().upper()
-```
+> 与客户端默认实现完全一致，便于前后端对齐。signingSecret 需安全分发与轮换。
 
 ### 2. HTTPS
 
-所有接口必须使用HTTPS协议，保证数据传输安全。
+所有接口必须使用HTTPS协议，保证数据传输安全。客户端支持 Certificate Pinning，服务端需提供稳定的公钥指纹（SHA-256 Pin）并在证书轮换前提前发布新指纹。
 
 ### 3. 频率限制
 
@@ -523,4 +517,3 @@ A: 后端需要检查订单状态，已支付的订单不允许再次支付。
 
 **Q: 异步通知收不到怎么办？**
 A: 客户端应该主动轮询查询订单状态，不要完全依赖异步通知。
-

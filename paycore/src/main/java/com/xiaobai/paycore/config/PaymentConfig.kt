@@ -32,7 +32,10 @@ data class PaymentConfig(
     val queryTimeoutMs: Long = 10000,
     
     /** 订单锁超时时间（毫秒），超过此时间自动释放锁，防止死锁 */
-    val orderLockTimeoutMs: Long = 300000  // 默认5分钟
+    val orderLockTimeoutMs: Long = 300000,  // 默认5分钟
+    
+    /** 安全配置：请求签名/验签、证书策略、防重放 */
+    val securityConfig: SecurityConfig = SecurityConfig()
 ) {
     
     class Builder {
@@ -46,6 +49,7 @@ data class PaymentConfig(
         private var queryIntervalMs: Long = 2000
         private var queryTimeoutMs: Long = 10000
         private var orderLockTimeoutMs: Long = 300000  // 默认5分钟
+        private var securityConfig: SecurityConfig = SecurityConfig()
         
         fun setAppId(appId: String) = apply { this.appId = appId }
         
@@ -82,6 +86,10 @@ data class PaymentConfig(
             this.orderLockTimeoutMs = timeoutMs
         }
         
+        fun setSecurityConfig(config: SecurityConfig) = apply {
+            this.securityConfig = config
+        }
+        
         fun build(): PaymentConfig {
             require(appId.isNotBlank()) { "appId cannot be blank" }
             require(businessLine.isNotBlank()) { "businessLine cannot be blank" }
@@ -97,9 +105,49 @@ data class PaymentConfig(
                 maxQueryRetries = maxQueryRetries,
                 queryIntervalMs = queryIntervalMs,
                 queryTimeoutMs = queryTimeoutMs,
-                orderLockTimeoutMs = orderLockTimeoutMs
+                orderLockTimeoutMs = orderLockTimeoutMs,
+                securityConfig = securityConfig
             )
         }
     }
 }
 
+/**
+ * 安全相关配置
+ */
+data class SecurityConfig(
+    /** 启用请求签名（HMAC SHA-256） */
+    val enableSignature: Boolean = false,
+    /** 签名密钥，必须与服务端约定一致 */
+    val signingSecret: String? = null,
+    /** 请求签名头 */
+    val signatureHeader: String = "X-Signature",
+    /** 请求时间戳头（毫秒） */
+    val timestampHeader: String = "X-Timestamp",
+    /** 请求随机数头 */
+    val nonceHeader: String = "X-Nonce",
+    /** 响应签名头（用于验签） */
+    val serverSignatureHeader: String = "X-Server-Signature",
+    /** 响应时间戳头（用于验签/防重放） */
+    val serverTimestampHeader: String = "X-Server-Timestamp",
+    /** 验证响应签名 */
+    val enableResponseVerification: Boolean = false,
+    /** 允许的服务端时间偏差（毫秒），用于验签防重放 */
+    val maxServerClockSkewMs: Long = 5 * 60 * 1000,
+    /** 启用证书绑定（certificate pinning） */
+    val enableCertificatePinning: Boolean = false,
+    /**
+     * 证书指纹配置：host -> pins
+     * pins 形如 "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+     */
+    val certificatePins: Map<String, List<String>> = emptyMap()
+) {
+    init {
+        if (enableSignature) {
+            require(!signingSecret.isNullOrBlank()) { "signingSecret is required when enableSignature=true" }
+        }
+        if (enableCertificatePinning) {
+            require(certificatePins.isNotEmpty()) { "certificatePins is required when enableCertificatePinning=true" }
+        }
+    }
+}

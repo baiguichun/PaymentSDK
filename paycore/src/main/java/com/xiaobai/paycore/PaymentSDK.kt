@@ -55,7 +55,8 @@ object PaymentSDK {
         this.config = config
         this.apiService = PaymentApiService(
             baseUrl = config.apiBaseUrl,
-            timeoutMs = config.networkTimeout * 1000
+            timeoutMs = config.networkTimeout * 1000,
+            securityConfig = config.securityConfig
         )
         
         // 设置订单锁超时回调（用于日志记录）

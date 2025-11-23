@@ -1,8 +1,11 @@
 package com.xiaobai.paycore.network
 
 import com.xiaobai.paycore.channel.PaymentChannelMeta
+import com.xiaobai.paycore.config.SecurityConfig
+import com.xiaobai.paycore.security.SecuritySigner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -13,6 +16,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.scalars.ScalarsConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.HeaderMap
 import retrofit2.http.POST
 import retrofit2.http.Query
 import java.net.URLEncoder
@@ -23,18 +27,30 @@ import java.util.concurrent.TimeUnit
  */
 class PaymentApiService(
     baseUrl: String,
-    timeoutMs: Long
+    timeoutMs: Long,
+    securityConfig: SecurityConfig = SecurityConfig()
 ) {
 
     private val api: PaymentApi
+    private val signer = SecuritySigner(securityConfig)
+    private val securityCfg = securityConfig
 
     init {
         val safeTimeout = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().toLong()
-        val client = OkHttpClient.Builder()
+        val clientBuilder = OkHttpClient.Builder()
             .connectTimeout(safeTimeout, TimeUnit.MILLISECONDS)
             .readTimeout(safeTimeout, TimeUnit.MILLISECONDS)
             .writeTimeout(safeTimeout, TimeUnit.MILLISECONDS)
-            .build()
+        
+        if (securityCfg.enableCertificatePinning && securityCfg.certificatePins.isNotEmpty()) {
+            val pinnerBuilder = CertificatePinner.Builder()
+            securityCfg.certificatePins.forEach { (host, pins) ->
+                pins.forEach { pinnerBuilder.add(host, it) }
+            }
+            clientBuilder.certificatePinner(pinnerBuilder.build())
+        }
+
+        val client = clientBuilder.build()
 
         api = Retrofit.Builder()
             .baseUrl(baseUrl.ensureTrailingSlash())
@@ -52,11 +68,19 @@ class PaymentApiService(
         appId: String
     ): Result<List<PaymentChannelMeta>> = withContext(Dispatchers.IO) {
         try {
+            val queryMap = mapOf(
+                "businessLine" to businessLine.urlEncoded(),
+                "appId" to appId.urlEncoded()
+            )
+            val headers = signer.buildRequestHeaders(PAYMENT_CHANNELS_PATH, queryMap)
             val response = api.getPaymentChannels(
+                headers = headers,
                 businessLine = businessLine.urlEncoded(),
                 appId = appId.urlEncoded()
             )
-            handleResponse(response) { body -> parseChannelsResponse(body) }
+            handleResponse(response, PAYMENT_CHANNELS_PATH, queryMap) { body ->
+                parseChannelsResponse(body)
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -72,17 +96,26 @@ class PaymentApiService(
         extraParams: Map<String, Any> = emptyMap()
     ): Result<Map<String, Any>> = withContext(Dispatchers.IO) {
         try {
-            val requestBody = JSONObject().apply {
+            val requestBodyString = JSONObject().apply {
                 put("orderId", orderId)
                 put("channelId", channelId)
                 put("amount", amount)
                 if (extraParams.isNotEmpty()) {
                     put("extraParams", JSONObject(extraParams))
                 }
-            }.toString().toRequestBody(JSON_MEDIA_TYPE)
+            }.toString()
+            val headers = signer.buildRequestHeaders(
+                path = PAYMENT_CREATE_PATH,
+                body = requestBodyString
+            )
 
-            val response = api.createPaymentOrder(requestBody)
-            handleResponse(response) { body -> parseCreateOrderResponse(body) }
+            val response = api.createPaymentOrder(
+                headers = headers,
+                body = requestBodyString.toRequestBody(JSON_MEDIA_TYPE)
+            )
+            handleResponse(response, PAYMENT_CREATE_PATH, emptyMap()) { body ->
+                parseCreateOrderResponse(body)
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -96,11 +129,19 @@ class PaymentApiService(
         paymentId: String? = null
     ): Result<OrderStatusInfo> = withContext(Dispatchers.IO) {
         try {
+            val queryMap = mapOf(
+                "orderId" to orderId.urlEncoded(),
+                "paymentId" to paymentId?.urlEncoded()
+            )
+            val headers = signer.buildRequestHeaders(PAYMENT_STATUS_PATH, queryMap)
             val response = api.queryOrderStatus(
+                headers = headers,
                 orderId = orderId.urlEncoded(),
                 paymentId = paymentId?.urlEncoded()
             )
-            handleResponse(response) { body -> parseOrderStatusResponse(body) }
+            handleResponse(response, PAYMENT_STATUS_PATH, queryMap) { body ->
+                parseOrderStatusResponse(body)
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -175,6 +216,8 @@ class PaymentApiService(
 
     private fun <R> handleResponse(
         response: Response<String>,
+        path: String,
+        query: Map<String, String?>,
         parser: (String) -> R
     ): Result<R> {
         if (!response.isSuccessful) {
@@ -182,6 +225,16 @@ class PaymentApiService(
         }
         val body = response.body()
         return if (body != null) {
+            val verifyResult = signer.verifyResponseSignature(
+                responseSignature = response.headers()[securityCfg.serverSignatureHeader],
+                responseTimestamp = response.headers()[securityCfg.serverTimestampHeader],
+                path = path,
+                query = query,
+                body = body
+            )
+            if (verifyResult.isFailure) {
+                return Result.failure(verifyResult.exceptionOrNull()!!)
+            }
             try {
                 Result.success(parser(body))
             } catch (e: Exception) {
@@ -194,23 +247,29 @@ class PaymentApiService(
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+        private const val PAYMENT_CHANNELS_PATH = "api/payment/channels"
+        private const val PAYMENT_CREATE_PATH = "api/payment/create"
+        private const val PAYMENT_STATUS_PATH = "api/payment/order/status"
     }
 }
 
 private interface PaymentApi {
     @GET("api/payment/channels")
     suspend fun getPaymentChannels(
+        @HeaderMap headers: Map<String, String>,
         @Query("businessLine") businessLine: String,
         @Query("appId") appId: String
     ): Response<String>
 
     @POST("api/payment/create")
     suspend fun createPaymentOrder(
+        @HeaderMap headers: Map<String, String>,
         @Body body: RequestBody
     ): Response<String>
 
     @GET("api/payment/order/status")
     suspend fun queryOrderStatus(
+        @HeaderMap headers: Map<String, String>,
         @Query("orderId") orderId: String,
         @Query("paymentId") paymentId: String?
     ): Response<String>

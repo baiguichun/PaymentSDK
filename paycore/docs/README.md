@@ -19,6 +19,8 @@
 ✅ **超时自动释放** - 订单锁5分钟后自动释放，防止死锁  
 ✅ **内存安全** - 无内存泄漏风险  
 ✅ **线程安全** - 完整的并发控制
+✅ **可选签名/验签** - HMAC-SHA256 + 时间戳/随机数防篡改、防重放  
+✅ **可选证书绑定** - Certificate Pinning 防中间人攻击
 
 ### 🎨 优秀的用户体验
 ✅ **半屏弹窗UI** - 友好的支付渠道选择界面  
@@ -105,6 +107,18 @@ class MyApplication : Application() {
             .setQueryIntervalMs(2000)    // 查询间隔（默认2秒）
             .setQueryTimeoutMs(10000)    // 查询超时时间（默认10秒）
             .setOrderLockTimeoutMs(5 * 60 * 1000) // 订单锁超时（默认5分钟）
+            // 可选：启用签名/验签 + 证书Pinning
+            .setSecurityConfig(
+                SecurityConfig(
+                    enableSignature = true,
+                    enableResponseVerification = true,
+                    signingSecret = "shared_secret_from_server",
+                    enableCertificatePinning = true,
+                    certificatePins = mapOf(
+                        "api.example.com" to listOf("sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                    )
+                )
+            )
             .build()
         
         // 初始化
