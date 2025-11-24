@@ -50,11 +50,33 @@ class MyApplication : Application() {
             .setAppId("your_app_id")
             .setBusinessLine("retail")
             .setApiBaseUrl("https://api.example.com")
+            .setDebugMode(BuildConfig.DEBUG)
+            .setMaxQueryRetries(3)       // 查询重试次数(默认3次)
+            .setQueryIntervalMs(2000)    // 查询间隔(默认2秒)
+            .setQueryTimeoutMs(10000)    // 查询超时(默认10秒)
+            .setOrderLockTimeoutMs(300000) // 订单锁超时(默认5分钟)
+            // 可选：启用签名/验签 + 证书Pinning
+            .setSecurityConfig(
+                SecurityConfig(
+                    enableSignature = true,
+                    enableResponseVerification = true,
+                    signingSecret = "shared_secret_from_server",
+                    enableCertificatePinning = true,
+                    certificatePins = mapOf(
+                        "api.example.com" to listOf("sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                    )
+                )
+            )
             .build()
         
         PaymentSDK.init(this, config)
-        PaymentSDK.registerChannel(WeChatPayChannel())
-        PaymentSDK.registerChannel(AlipayChannel())
+        
+        // 注册已集成的支付渠道
+        PaymentSDK.registerChannels(listOf(
+            WeChatPayChannel(),
+            AlipayChannel(),
+            UnionPayChannel()
+        ))
     }
 }
 ```
@@ -73,12 +95,20 @@ PaymentSDK.showPaymentSheet(
                 Toast.makeText(this, "支付成功", Toast.LENGTH_SHORT).show()
             }
             is PaymentResult.Failed -> {
-                Toast.makeText(this, "支付失败", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "支付失败: ${result.errorMessage}", Toast.LENGTH_SHORT).show()
             }
-            // ... 其他状态处理
+            is PaymentResult.Cancelled -> {
+                Toast.makeText(this, "支付已取消", Toast.LENGTH_SHORT).show()
+            }
+            is PaymentResult.Processing -> {
+                // SDK查询超时，引导用户查看订单列表
+                Toast.makeText(this, "支付处理中，请稍后查询订单", Toast.LENGTH_LONG).show()
+            }
         }
     },
-    onCancelled = { }
+    onCancelled = {
+        Toast.makeText(this, "已取消", Toast.LENGTH_SHORT).show()
+    }
 )
 ```
 
@@ -90,6 +120,8 @@ PaymentSDK.showPaymentSheet(
 - [API文档](./paycore/docs/API.md) - 完整API参考
 - [集成指南](./paycore/docs/INTEGRATION_GUIDE.md) - 详细集成步骤
 - [架构设计](./paycore/docs/ARCHITECTURE.md) - 架构说明
+- [渠道实现指南](./paycore/docs/CHANNEL_IMPLEMENTATION_GUIDE.md) - 🆕 支付渠道实现示例
+- [错误码指南](./paycore/docs/ERROR_CODE_GUIDE.md) - 🆕 标准化错误码说明
 - [变更日志](./paycore/docs/CHANGELOG.md) - 版本历史
 - [迁移指南](./paycore/docs/MIGRATION_GUIDE_V2.md) - 从v1.x迁移
 
@@ -162,14 +194,28 @@ class ComposeActivity : ComponentActivity() { }
 ### 生命周期自动管理
 
 ```kotlin
-// v2.0: 自动监听用户返回并查询结果
+// v2.0: 使用回调方式,SDK自动监听用户返回并查询结果
 PaymentSDK.payWithChannel(
     channelId = "wechat_pay",
-    context = context,
+    context = this,
     orderId = orderId,
     amount = amount,
     onResult = { result ->
         // ✅ SDK已完成生命周期监听和结果查询
+        when (result) {
+            is PaymentResult.Success -> {
+                Toast.makeText(this, "支付成功", Toast.LENGTH_SHORT).show()
+            }
+            is PaymentResult.Failed -> {
+                Toast.makeText(this, "支付失败", Toast.LENGTH_SHORT).show()
+            }
+            is PaymentResult.Cancelled -> {
+                Toast.makeText(this, "支付已取消", Toast.LENGTH_SHORT).show()
+            }
+            is PaymentResult.Processing -> {
+                Toast.makeText(this, "支付处理中", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 )
 ```
@@ -207,6 +253,7 @@ class CustomPayChannel : IPaymentChannel {
     override val channelIcon = R.drawable.ic_custom
     override val requiresApp = true
     override val packageName = "com.custom.pay"
+    override val priority = 50  // 优先级(可选)
     
     override fun pay(
         context: Context,
@@ -225,21 +272,42 @@ class CustomPayChannel : IPaymentChannel {
 }
 ```
 
+**📖 详细示例**：查看[渠道实现指南](./paycore/docs/CHANNEL_IMPLEMENTATION_GUIDE.md)，包含：
+- 微信支付完整实现(含回调Activity)
+- 支付宝支付完整实现(含线程处理)
+- 银联支付完整实现
+- H5网页支付实现
+- 最佳实践和测试建议
+
 ## 🔒 安全性
 
-- ✅ 订单级锁防止重复支付
-- ✅ ConcurrentHashMap线程安全
+- ✅ 订单级锁防止重复支付,超时自动释放(默认5分钟)
+- ✅ ConcurrentHashMap + ReentrantLock保证线程安全
 - ✅ 自动释放资源防止泄漏
-- ✅ 完整的异常处理（含后端响应解析失败直接返回错误）
-- ✅ 支付流程被系统回收时兜底回调失败，避免回调悬挂
-- ✅ 可选请求签名/响应验签（HMAC-SHA256 + 时间戳/随机数）防篡改与重放
-- ✅ 可选 HTTPS 证书绑定（Certificate Pinning）
+- ✅ 完整的异常处理(含后端响应解析失败直接返回错误)
+- ✅ 支付流程被系统回收时兜底回调失败,避免回调悬挂
+- ✅ 查询去重机制,同一订单并发查询共享结果
+- ✅ 可选请求签名/响应验签(HMAC-SHA256 + 时间戳/随机数)防篡改与重放
+- ✅ 可选 HTTPS 证书绑定(Certificate Pinning)防中间人攻击
 
 ## ⚡ 性能优化
 
-- ✅ 协程统一处理异步
-- ✅ 避免内存泄漏
-- ✅ v2.0删除200行冗余代码
+- ✅ Kotlin协程统一处理异步操作
+- ✅ 查询去重避免重复网络请求
+- ✅ 自动管理协程作用域,避免内存泄漏
+- ✅ v2.0删除200行冗余代码,架构更清晰
+- ✅ 基于Retrofit + OkHttp的高效网络层
+
+## 🏗️ 技术栈
+
+- **语言**: Kotlin 2.0.21
+- **最低支持**: Android API 24 (Android 7.0)
+- **编译版本**: Android API 36
+- **协程**: Kotlinx Coroutines 1.10.2
+- **网络**: Retrofit 3.0.0 + OkHttp 5.3.2
+- **UI**: Material Design + AndroidX
+- **JSON**: org.json (Android内置)
+- **安全**: HMAC-SHA256 + Certificate Pinning
 
 ## 📝 License
 

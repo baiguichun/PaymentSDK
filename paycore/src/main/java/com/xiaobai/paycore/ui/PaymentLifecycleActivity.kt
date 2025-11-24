@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.PaymentSDK
+import com.xiaobai.paycore.PaymentErrorCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -102,7 +103,10 @@ class PaymentLifecycleActivity : Activity() {
         }
         
         if (orderId.isEmpty() || channelId.isEmpty()) {
-            finishWithResult(PaymentResult.Failed("支付参数错误"))
+            finishWithResult(PaymentResult.Failed(
+                PaymentErrorCode.PARAMS_INVALID.message,
+                PaymentErrorCode.PARAMS_INVALID.code
+            ))
             return
         }
         
@@ -151,7 +155,10 @@ class PaymentLifecycleActivity : Activity() {
         if (!isFinishing) {
             val callbackData = pendingCallbacks.remove(orderId)
             callbackData?.callback?.invoke(
-                PaymentResult.Failed("支付流程已中断，请重试")
+                PaymentResult.Failed(
+                    PaymentErrorCode.PAYMENT_INTERRUPTED.message,
+                    PaymentErrorCode.PAYMENT_INTERRUPTED.code
+                )
             )
         }
         
@@ -173,13 +180,19 @@ class PaymentLifecycleActivity : Activity() {
                 // 获取支付渠道
                 val channel = PaymentSDK.getChannelManager().getChannel(channelId)
                 if (channel == null) {
-                    finishWithResult(PaymentResult.Failed("支付渠道不存在: $channelId"))
+                    finishWithResult(PaymentResult.Failed(
+                        "${PaymentErrorCode.CHANNEL_NOT_FOUND.message}: $channelId",
+                        PaymentErrorCode.CHANNEL_NOT_FOUND.code
+                    ))
                     return@launch
                 }
                 
                 // 检查APP是否安装
                 if (channel.requiresApp && !channel.isAppInstalled(this@PaymentLifecycleActivity)) {
-                    finishWithResult(PaymentResult.Failed("${channel.channelName}未安装"))
+                    finishWithResult(PaymentResult.Failed(
+                        "${channel.channelName}${PaymentErrorCode.APP_NOT_INSTALLED.message}",
+                        PaymentErrorCode.APP_NOT_INSTALLED.code
+                    ))
                     return@launch
                 }
                 
@@ -211,7 +224,10 @@ class PaymentLifecycleActivity : Activity() {
                     println("调起支付异常: ${e.message}")
                     e.printStackTrace()
                 }
-                finishWithResult(PaymentResult.Failed("调起支付失败: ${e.message}"))
+                finishWithResult(PaymentResult.Failed(
+                    "${PaymentErrorCode.LAUNCH_PAY_FAILED.message}: ${e.message}",
+                    PaymentErrorCode.LAUNCH_PAY_FAILED.code
+                ))
             }
         }
     }
@@ -252,7 +268,10 @@ class PaymentLifecycleActivity : Activity() {
                 if (PaymentSDK.getConfig().debugMode) {
                     println("查询订单状态异常: ${e.message}")
                 }
-                finishWithResult(PaymentResult.Failed("查询支付结果失败"))
+                finishWithResult(PaymentResult.Failed(
+                    "${PaymentErrorCode.QUERY_FAILED.message}: ${e.message}",
+                    PaymentErrorCode.QUERY_FAILED.code
+                ))
             }
         }
     }

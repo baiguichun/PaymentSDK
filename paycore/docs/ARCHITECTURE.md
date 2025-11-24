@@ -28,10 +28,10 @@
 │  │PaymentLifecycleAct │  │    PaymentApiService      │    │
 │  │  (生命周期监听)      │  │    (网络请求)              │    │
 │  └─────────────────────┘  └────────────────────────────┘    │
-│  ┌────────────────┐  ┌────────────────┐  ┌──────────────┐  │
-│  │PaymentLockMgr │  │AppInstall   │                       │
-│  │  (并发控制)     │  │  Checker    │                       │
-│  └────────────────┘  └──────────────┘                       │
+│  ┌────────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │PaymentLockMgr │  │AppInstall   │  │SecuritySigner│    │
+│  │  (并发控制)     │  │  Checker    │  │  (安全签名)   │    │
+│  └────────────────┘  └──────────────┘  └──────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -290,14 +290,26 @@ suspend fun queryOrderStatus(
 
 **关键方法：**
 ```kotlin
-// 尝试锁定订单
-fun tryLockOrder(orderId: String): Boolean
+// 尝试锁定订单(支持超时自动释放)
+fun tryLockOrder(orderId: String, timeoutMs: Long = 300000): Boolean
 
 // 释放订单锁
 fun unlockOrder(orderId: String)
 
-// 检查订单是否被锁定
-fun isOrderLocked(orderId: String): Boolean
+// 检查订单是否正在支付中
+fun isOrderPaying(orderId: String): Boolean
+
+// 设置超时回调(可选,用于日志记录)
+fun setOnTimeoutCallback(callback: ((orderId: String) -> Unit)?)
+
+// 获取正在支付的订单列表(调试用)
+fun getPayingOrders(): Set<String>
+
+// 清理所有锁(测试用)
+fun clearAll()
+
+// 关闭锁管理器(SDK关闭时调用)
+fun shutdown()
 ```
 
 **工作原理：**
@@ -334,6 +346,9 @@ fun unlockOrder(orderId: String) {
 
 // 超时任务：自动释放锁（防止死锁）
 private fun startTimeoutTask(orderId: String, timeoutMs: Long) {
+    // 取消之前的超时任务(如果存在)
+    timeoutJobs.remove(orderId)?.cancel()
+    
     val timeoutJob = timeoutScope.launch {
         try {
             delay(timeoutMs)  // 等待超时
@@ -354,12 +369,13 @@ private fun startTimeoutTask(orderId: String, timeoutMs: Long) {
 
 **超时自动释放机制：**
 - ✅ 防止 APP 崩溃或进程被杀死导致的锁永久持有
-- ✅ 订单锁在5分钟后自动释放（可配置）
+- ✅ 订单锁在配置的时间后自动释放（默认5分钟,可通过`orderLockTimeoutMs`配置）
 - ✅ 提升用户体验，用户可以在超时后重新支付
+- ✅ 可通过回调监听锁超时事件,便于日志记录和监控
 
 **查询去重机制（v2.0.1新增）：**
 
-为了避免同一订单的并发重复查询，SDK使用 `CompletableDeferred` 实现查询去重：
+为了避免同一订单的并发重复查询，SDK在`PaymentSDK`中使用 `CompletableDeferred` 实现查询去重：
 
 ```kotlin
 // PaymentSDK中的查询去重
@@ -369,8 +385,15 @@ private suspend fun queryPaymentResultWithRetry(orderId: String): PaymentResult 
     // 1. 检查是否已有正在进行的查询
     val existingQuery = activeQueries[orderId]
     if (existingQuery != null) {
+        if (config.debugMode) {
+            println("订单 $orderId 正在查询中，等待现有查询完成...")
+        }
         // 等待现有查询完成，避免重复请求
-        return existingQuery.await()
+        return try {
+            existingQuery.await()
+        } catch (e: Exception) {
+            PaymentResult.Failed("查询失败: ${e.message}")
+        }
     }
     
     // 2. 创建新的查询任务
@@ -378,13 +401,17 @@ private suspend fun queryPaymentResultWithRetry(orderId: String): PaymentResult 
     activeQueries[orderId] = queryDeferred
     
     try {
-        // 3. 执行查询
-        val result = performActualQuery(orderId)
+        // 3. 执行实际查询(支持重试和超时)
+        val result = performActualQueryWithRetry(orderId)
         
         // 4. 通知所有等待的协程
         queryDeferred.complete(result)
         
         return result
+    } catch (e: Exception) {
+        val errorResult = PaymentResult.Failed("查询异常: ${e.message}")
+        queryDeferred.completeExceptionally(e)
+        return errorResult
     } finally {
         // 5. 清理查询记录
         activeQueries.remove(orderId)
@@ -395,8 +422,143 @@ private suspend fun queryPaymentResultWithRetry(orderId: String): PaymentResult 
 **解决的问题：**
 - ✅ 自动查询（PaymentLifecycleActivity）+ 手动查询（queryOrderStatus）同时发生
 - ✅ 多个协程查询同一订单时，只执行一次实际查询
-- ✅ 其他协程等待首次查询结果，避免重复网络请求
+- ✅ 其他协程等待首次查询结果，共享相同结果
 - ✅ 自动清理，防止内存泄漏
+- ✅ 异常处理完善,查询失败不影响其他协程
+
+### 2.9 SecuritySigner (安全签名)
+
+> 提供请求签名/验签功能,支持HMAC-SHA256算法
+
+**职责：**
+- 生成请求签名(HMAC-SHA256)
+- 验证响应签名
+- 防止请求篡改和重放攻击
+- 支持时间戳和随机数
+
+**签名规范：**
+```kotlin
+// 请求canonical string
+val canonicalString = listOf(
+    path,                    // API路径
+    canonicalQuery,          // 排序后的query参数: k1=v1&k2=v2
+    body.orEmpty(),         // 请求体(POST时)或空字符串
+    timestamp,              // 时间戳(毫秒)
+    nonce                   // 16字节随机数(Base64)
+).joinToString("\n")
+
+// 签名
+val signature = Base64(HMAC-SHA256(canonicalString, signingSecret))
+
+// 请求头
+headers["X-Signature"] = signature
+headers["X-Timestamp"] = timestamp
+headers["X-Nonce"] = nonce
+```
+
+**响应验签规范(可选):**
+```kotlin
+// 响应canonical string(不含nonce)
+val canonicalString = listOf(
+    path,
+    canonicalQuery,
+    body.orEmpty(),
+    serverTimestamp
+).joinToString("\n")
+
+// 验证签名
+val expectedSignature = Base64(HMAC-SHA256(canonicalString, signingSecret))
+if (expectedSignature != responseSignature) {
+    throw IllegalStateException("Server signature mismatch")
+}
+
+// 检查时间偏差(防重放)
+val skew = abs(System.currentTimeMillis() - serverTimestamp)
+if (skew > maxServerClockSkewMs) {
+    throw IllegalStateException("Server timestamp skew too large")
+}
+```
+
+**关键方法：**
+```kotlin
+// 构造请求签名头
+fun buildRequestHeaders(
+    path: String,
+    query: Map<String, String?> = emptyMap(),
+    body: String? = null
+): Map<String, String>
+
+// 验证响应签名
+fun verifyResponseSignature(
+    responseSignature: String?,
+    responseTimestamp: String?,
+    path: String,
+    query: Map<String, String?> = emptyMap(),
+    body: String? = null
+): Result<Unit>
+```
+
+**配置参数（SecurityConfig）：**
+```kotlin
+data class SecurityConfig(
+    // 请求签名
+    val enableSignature: Boolean = false,           // 启用请求签名
+    val signingSecret: String? = null,              // 签名密钥(开启时必填)
+    val signatureHeader: String = "X-Signature",    // 签名头
+    val timestampHeader: String = "X-Timestamp",    // 时间戳头
+    val nonceHeader: String = "X-Nonce",            // 随机数头
+    
+    // 响应验签
+    val enableResponseVerification: Boolean = false,         // 启用响应验签
+    val serverSignatureHeader: String = "X-Server-Signature", // 服务端签名头
+    val serverTimestampHeader: String = "X-Server-Timestamp", // 服务端时间戳头
+    val maxServerClockSkewMs: Long = 5 * 60 * 1000,          // 允许时间偏差(默认5分钟)
+    
+    // 证书绑定
+    val enableCertificatePinning: Boolean = false,   // 启用证书绑定
+    val certificatePins: Map<String, List<String>> = emptyMap() // host -> pins
+)
+```
+
+**集成示例:**
+```kotlin
+// 1. 配置安全参数
+val config = PaymentConfig.Builder()
+    .setSecurityConfig(
+        SecurityConfig(
+            enableSignature = true,
+            enableResponseVerification = true,
+            signingSecret = "your_shared_secret_with_backend",
+            enableCertificatePinning = true,
+            certificatePins = mapOf(
+                "api.example.com" to listOf(
+                    "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                )
+            )
+        )
+    )
+    .build()
+
+// 2. SDK自动处理签名和验签
+PaymentSDK.init(app, config)
+
+// 3. 所有API请求自动添加签名头
+// 4. 所有API响应自动验签
+```
+
+**安全保障：**
+- ✅ **防篡改**: HMAC-SHA256保证请求/响应内容未被篡改
+- ✅ **防重放**: 时间戳+随机数机制(服务端可配合缓存窗口检测)
+- ✅ **中间人防护**: Certificate Pinning防止中间人攻击
+- ✅ **密钥安全**: 签名密钥仅存在内存,不持久化
+- ✅ **灵活配置**: 可单独启用签名、验签、证书绑定
+
+**注意事项：**
+1. 签名密钥应与服务端约定一致,建议使用环境变量或加密存储
+2. 证书指纹格式: `sha256/Base64EncodedHash`
+3. 时间偏差校验依赖客户端时间准确性
+4. 服务端应实现相同的签名/验签逻辑
+5. 如果未启用签名,`buildRequestHeaders`返回空Map,不影响正常请求
 
 ## 3. 支付流程设计
 
@@ -687,19 +849,165 @@ showCustomChannelPicker(channels) { selectedChannel ->
 
 1. **敏感信息不存储**：支付参数仅在内存中传递，不持久化
 2. **HTTPS通信**：所有网络请求使用HTTPS
-3. **签名验证**：支付参数包含签名，防止篡改
+3. **请求签名**：支持HMAC-SHA256签名防止篡改(可选)
+4. **响应验签**：验证服务端响应完整性(可选)
+5. **防重放攻击**：时间戳+随机数机制(可选)
+6. **证书绑定**：Certificate Pinning防中间人攻击(可选)
 
-### 6.2 代码混淆
+### 6.2 签名/验签流程
+
+```
+┌─────────────┐                             ┌─────────────┐
+│   客户端     │                             │   服务端     │
+└──────┬──────┘                             └──────┬──────┘
+       │                                            │
+       │ 1. 构造请求                                │
+       │   - path, query, body                     │
+       │   - timestamp, nonce                      │
+       │                                            │
+       │ 2. 生成签名                                │
+       │   signature = HMAC-SHA256(              │
+       │     canonicalString,                      │
+       │     signingSecret                         │
+       │   )                                        │
+       │                                            │
+       │ 3. 添加请求头                              │
+       │   X-Signature: signature                  │
+       │   X-Timestamp: timestamp                  │
+       │   X-Nonce: nonce                          │
+       │                                            │
+       ├──────── HTTP Request ──────────────────>│
+       │                                            │
+       │                                 4. 验证签名│
+       │                                   (服务端) │
+       │                                            │
+       │                                 5. 生成响应│
+       │                                   签名     │
+       │                                   (可选)   │
+       │                                            │
+       │<──────── HTTP Response ──────────────────┤
+       │   X-Server-Signature: ...                 │
+       │   X-Server-Timestamp: ...                 │
+       │                                            │
+       │ 6. 验证响应签名                            │
+       │    - 检查签名匹配                          │
+       │    - 检查时间偏差                          │
+       │                                            │
+       │ 7. 解析响应数据                            │
+       │                                            │
+```
+
+### 6.3 证书绑定(Certificate Pinning)
+
+```kotlin
+// 在PaymentApiService初始化时配置
+if (securityConfig.enableCertificatePinning 
+    && securityConfig.certificatePins.isNotEmpty()) {
+    val pinnerBuilder = CertificatePinner.Builder()
+    securityConfig.certificatePins.forEach { (host, pins) ->
+        pins.forEach { pinnerBuilder.add(host, it) }
+    }
+    clientBuilder.certificatePinner(pinnerBuilder.build())
+}
+```
+
+**证书指纹获取方式:**
+```bash
+# 方式1: 使用openssl
+echo | openssl s_client -connect api.example.com:443 2>/dev/null \
+  | openssl x509 -pubkey -noout \
+  | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary \
+  | base64
+
+# 方式2: 在Chrome中查看证书详情
+# 访问网站 → 锁图标 → 证书 → 详细信息 → 公钥信息
+
+# 配置格式
+sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+```
+
+### 6.4 安全配置示例
+
+```kotlin
+val config = PaymentConfig.Builder()
+    .setAppId("your_app_id")
+    .setBusinessLine("production")
+    .setApiBaseUrl("https://api.example.com")
+    .setSecurityConfig(
+        SecurityConfig(
+            // 请求签名
+            enableSignature = true,
+            signingSecret = BuildConfig.PAYMENT_SECRET, // 从环境变量读取
+            signatureHeader = "X-Signature",
+            timestampHeader = "X-Timestamp",
+            nonceHeader = "X-Nonce",
+            
+            // 响应验签
+            enableResponseVerification = true,
+            serverSignatureHeader = "X-Server-Signature",
+            serverTimestampHeader = "X-Server-Timestamp",
+            maxServerClockSkewMs = 5 * 60 * 1000, // 5分钟
+            
+            // 证书绑定
+            enableCertificatePinning = true,
+            certificatePins = mapOf(
+                "api.example.com" to listOf(
+                    "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" // 备用证书
+                )
+            )
+        )
+    )
+    .build()
+```
+
+### 6.5 代码混淆
 
 ```proguard
 # 核心类不混淆
--keep class com.payment.core.PaymentSDK { *; }
--keep interface com.payment.core.channel.IPaymentChannel { *; }
--keep class com.payment.core.PaymentResult { *; }
+-keep class com.xiaobai.paycore.PaymentSDK { *; }
+-keep class com.xiaobai.paycore.PaymentResult { *; }
+-keep class com.xiaobai.paycore.config.PaymentConfig { *; }
+-keep interface com.xiaobai.paycore.channel.IPaymentChannel { *; }
 
 # 渠道实现类不混淆（便于反射查找）
--keep class * implements com.payment.core.channel.IPaymentChannel { *; }
+-keep class * implements com.xiaobai.paycore.channel.IPaymentChannel { *; }
+
+# 网络相关类不混淆
+-keep class com.xiaobai.paycore.network.** { *; }
+
+# 安全相关类不混淆(签名计算需要)
+-keep class com.xiaobai.paycore.security.** { *; }
+-keep class com.xiaobai.paycore.config.SecurityConfig { *; }
 ```
+
+### 6.6 安全最佳实践
+
+1. **密钥管理**
+   - 签名密钥不要硬编码,使用`BuildConfig`或加密存储
+   - 生产和测试环境使用不同密钥
+   - 定期轮换密钥
+
+2. **证书绑定**
+   - 配置主证书和备用证书,便于证书更新
+   - 监控证书过期时间
+   - 提前规划证书更换流程
+
+3. **时间同步**
+   - 客户端时间不准确会导致验签失败
+   - `maxServerClockSkewMs`设置合理值(建议5-10分钟)
+   - 提示用户检查系统时间
+
+4. **错误处理**
+   - 签名/验签失败时记录日志
+   - 不要在错误信息中暴露敏感信息
+   - 提供友好的错误提示
+
+5. **调试模式**
+   - 生产环境禁用`debugMode`
+   - 调试模式下可输出签名调试信息
+   - 使用条件编译隔离调试代码
 
 ## 7. 性能优化
 

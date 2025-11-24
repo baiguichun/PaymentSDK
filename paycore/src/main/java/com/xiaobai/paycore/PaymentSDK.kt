@@ -13,6 +13,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.util.concurrent.ConcurrentHashMap
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 
 /**
  * 聚合支付SDK入口类
@@ -79,7 +83,7 @@ object PaymentSDK {
     private fun checkInitialized() {
         if (!isInitialized) {
             throw IllegalStateException(
-                "PaymentSDK 未初始化！请先在 Application.onCreate() 中调用 PaymentSDK.init()"
+                PaymentErrorCode.SDK_NOT_INITIALIZED.message
             )
         }
     }
@@ -131,6 +135,12 @@ object PaymentSDK {
         onCancelled: () -> Unit
     ) {
         checkInitialized()
+
+        // 基础参数校验，提前返回标准化错误
+        validateOrderInput(orderId, amount)?.let {
+            onPaymentResult(it)
+            return
+        }
         
         val dialog = PaymentSheetDialog(
             activity = activity,
@@ -171,26 +181,37 @@ object PaymentSDK {
         onResult: (PaymentResult) -> Unit
     ) {
         checkInitialized()
+
+        // 基础参数校验
+        validateOrderInput(orderId, amount)?.let {
+            onResult(it)
+            return
+        }
+
+        if (channelId.isBlank()) {
+            onResult(buildFailure(PaymentErrorCode.PARAMS_INVALID, "channelId 不能为空"))
+            return
+        }
         
         // 检查订单是否正在支付中
         if (PaymentLockManager.isOrderPaying(orderId)) {
             if (config.debugMode) {
                 println("订单 $orderId 正在支付中，拒绝重复支付")
             }
-            onResult(PaymentResult.Failed("订单正在支付中，请勿重复操作"))
+            onResult(buildFailure(PaymentErrorCode.ORDER_LOCKED))
             return
         }
         
         // 验证渠道是否存在
         val channel = channelManager.getChannel(channelId)
         if (channel == null) {
-            onResult(PaymentResult.Failed("支付渠道不存在: $channelId"))
+            onResult(buildFailure(PaymentErrorCode.CHANNEL_NOT_FOUND, channelId))
             return
         }
         
         // 锁定订单（使用配置的超时时间）
         if (!PaymentLockManager.tryLockOrder(orderId, config.orderLockTimeoutMs)) {
-            onResult(PaymentResult.Failed("订单正在支付中，请勿重复操作"))
+            onResult(buildFailure(PaymentErrorCode.ORDER_LOCKED))
             return
         }
         
@@ -231,7 +252,10 @@ object PaymentSDK {
                 if (config.debugMode) {
                     println("等待现有查询失败: ${e.message}")
                 }
-                PaymentResult.Failed("查询失败: ${e.message}")
+                PaymentResult.Failed(
+                    "${PaymentErrorCode.QUERY_FAILED.message}: ${e.message}",
+                    PaymentErrorCode.QUERY_FAILED.code
+                )
             }
         }
         
@@ -255,7 +279,10 @@ object PaymentSDK {
                     if (config.debugMode) {
                         println("查询超时，返回处理中状态")
                     }
-                    finalResult = PaymentResult.Processing("支付处理中，请稍后查询订单状态")
+                    finalResult = PaymentResult.Processing(
+                        PaymentErrorCode.QUERY_TIMEOUT.message,
+                        PaymentErrorCode.QUERY_TIMEOUT.code
+                    )
                     break
                 }
                 
@@ -282,7 +309,7 @@ object PaymentSDK {
                                     if (config.debugMode) {
                                         println("支付失败")
                                     }
-                                    finalResult = PaymentResult.Failed("支付失败")
+                                    finalResult = buildFailure(PaymentErrorCode.CHANNEL_ERROR)
                                 }
                                 "cancelled" -> {
                                     if (config.debugMode) {
@@ -304,14 +331,22 @@ object PaymentSDK {
                             }
                         }
                     } else {
+                        val failure = mapExceptionToFailed(
+                            result.exceptionOrNull(),
+                            PaymentErrorCode.QUERY_FAILED
+                        )
+                        finalResult = failure
                         if (config.debugMode) {
                             println("查询失败: ${result.exceptionOrNull()?.message}")
                         }
+                        break
                     }
                 } catch (e: Exception) {
+                    finalResult = mapExceptionToFailed(e, PaymentErrorCode.QUERY_EXCEPTION)
                     if (config.debugMode) {
                         println("查询异常: ${e.message}")
                     }
+                    break
                 }
                 
                 // 如果不是最后一次重试，等待后继续
@@ -327,7 +362,10 @@ object PaymentSDK {
                 if (config.debugMode) {
                     println("达到最大重试次数，返回处理中状态")
                 }
-                PaymentResult.Processing("支付处理中，请稍后查询订单状态")
+                PaymentResult.Processing(
+                    PaymentErrorCode.QUERY_TIMEOUT.message,
+                    PaymentErrorCode.QUERY_TIMEOUT.code
+                )
             }
             
             // 通知所有等待的协程
@@ -336,8 +374,8 @@ object PaymentSDK {
             return result
         } catch (e: Exception) {
             // 查询过程中发生异常
-            val errorResult = PaymentResult.Failed("查询异常: ${e.message}")
-            queryDeferred.completeExceptionally(e)
+            val errorResult = mapExceptionToFailed(e, PaymentErrorCode.QUERY_EXCEPTION)
+            queryDeferred.complete(errorResult)
             return errorResult
         } finally {
             // 清理查询记录
@@ -369,7 +407,10 @@ object PaymentSDK {
             if (config.debugMode) {
                 println("查询订单状态异常: ${e.message}")
             }
-            PaymentResult.Failed("查询订单状态失败: ${e.message}")
+            PaymentResult.Failed(
+                "${PaymentErrorCode.QUERY_FAILED.message}: ${e.message}",
+                PaymentErrorCode.QUERY_FAILED.code
+            )
         }
     }
     
@@ -427,6 +468,59 @@ object PaymentSDK {
         }
     }
     
+    // ========== 内部工具方法 ==========
+    private fun validateOrderInput(
+        orderId: String,
+        amount: BigDecimal
+    ): PaymentResult.Failed? {
+        if (orderId.isBlank()) {
+            return buildFailure(PaymentErrorCode.ORDER_ID_EMPTY)
+        }
+        if (amount <= BigDecimal.ZERO) {
+            return buildFailure(PaymentErrorCode.ORDER_AMOUNT_INVALID)
+        }
+        return null
+    }
+
+    internal fun buildFailure(
+        code: PaymentErrorCode,
+        detail: String? = null
+    ): PaymentResult.Failed {
+        val msg = detail?.takeIf { it.isNotBlank() }?.let { "${code.message}: $it" } ?: code.message
+        return PaymentResult.Failed(msg, code.code)
+    }
+
+    internal fun mapExceptionToFailed(
+        throwable: Throwable?,
+        defaultCode: PaymentErrorCode
+    ): PaymentResult.Failed {
+        val code = mapExceptionToErrorCode(throwable, defaultCode)
+        val messageDetail = throwable?.message
+        return buildFailure(code, messageDetail)
+    }
+
+    private fun mapExceptionToErrorCode(
+        throwable: Throwable?,
+        defaultCode: PaymentErrorCode
+    ): PaymentErrorCode {
+        if (throwable == null) return defaultCode
+        return when (throwable) {
+            is SocketTimeoutException -> PaymentErrorCode.NETWORK_TIMEOUT
+            is UnknownHostException, is ConnectException -> PaymentErrorCode.NETWORK_ERROR
+            is SSLException -> PaymentErrorCode.CERTIFICATE_VERIFY_FAILED
+            else -> {
+                val message = throwable.message.orEmpty().lowercase()
+                when {
+                    message.startsWith("http error") -> PaymentErrorCode.HTTP_ERROR
+                    message.contains("signature") -> PaymentErrorCode.SIGNATURE_VERIFY_FAILED
+                    message.contains("signingsecret") -> PaymentErrorCode.SIGNING_SECRET_MISSING
+                    message.contains("timestamp skew") -> PaymentErrorCode.TIMESTAMP_INVALID
+                    else -> defaultCode
+                }
+            }
+        }
+    }
+    
     /**
      * 获取支付状态（调试用）
      */
@@ -476,12 +570,25 @@ sealed class PaymentResult {
     /**
      * 支付失败
      * @param errorMessage 错误信息
-     * @param errorCode 错误码（可选）
+     * @param errorCode 错误码
      */
     data class Failed(
         val errorMessage: String,
-        val errorCode: String? = null
-    ) : PaymentResult()
+        val errorCode: String = PaymentErrorCode.UNKNOWN_ERROR.code
+    ) : PaymentResult() {
+        
+        /**
+         * 是否可重试
+         */
+        val isRetryable: Boolean
+            get() = PaymentErrorCode.isRetryable(errorCode)
+        
+        /**
+         * 获取错误码枚举
+         */
+        val errorCodeEnum: PaymentErrorCode?
+            get() = PaymentErrorCode.fromCode(errorCode)
+    }
     
     /**
      * 用户取消支付
@@ -491,9 +598,13 @@ sealed class PaymentResult {
     /**
      * 支付处理中
      * @param message 提示信息
+     * @param errorCode 错误码
      * 
      * 当SDK自动查询后端结果超时或达到最大重试次数时返回此状态
      * 调用方可以稍后手动查询订单状态
      */
-    data class Processing(val message: String) : PaymentResult()
+    data class Processing(
+        val message: String,
+        val errorCode: String = PaymentErrorCode.QUERY_TIMEOUT.code
+    ) : PaymentResult()
 }

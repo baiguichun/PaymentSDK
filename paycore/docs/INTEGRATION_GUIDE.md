@@ -278,23 +278,25 @@ private fun handlePaymentResult(result: PaymentResult) {
 适用于已经确定支付方式的场景（如用户设置了默认支付方式）。
 
 **SDK会自动处理支付流程：**
-1. 调用支付渠道SDK
-2. 自动查询后端支付结果
-3. 返回最终的支付状态
+1. 启动透明Activity监听生命周期
+2. 调用支付渠道SDK调起第三方APP
+3. 监听用户从第三方APP返回
+4. 自动查询后端支付结果(轮询重试)
+5. 返回最终的支付状态
 
 ```kotlin
-lifecycleScope.launch {
-    val result = PaymentSDK.payWithChannel(
-        channelId = "wechat_pay",
-        context = this@Activity,
-        orderId = orderId,
-        amount = amount,
-        extraParams = emptyMap()
-    )
-    
-    // SDK已自动查询后端结果，直接处理最终状态
-    handlePaymentResult(result)
-}
+// 使用回调方式(推荐)
+PaymentSDK.payWithChannel(
+    channelId = "wechat_pay",
+    context = this,
+    orderId = orderId,
+    amount = amount,
+    extraParams = emptyMap(),
+    onResult = { result ->
+        // SDK已自动查询后端结果，直接处理最终状态
+        handlePaymentResult(result)
+    }
+)
 ```
 
 ### 场景3：自定义渠道选择UI
@@ -307,11 +309,16 @@ val channels = PaymentSDK.getAvailableChannels(this)
 
 // 2. 展示自定义UI
 showCustomChannelSelector(channels) { selectedChannel ->
-    // 3. 执行支付
-    lifecycleScope.launch {
-        val result = selectedChannel.pay(...)
-        handlePaymentResult(result)
-    }
+    // 3. 使用SDK执行支付(推荐,自动处理生命周期和查询)
+    PaymentSDK.payWithChannel(
+        channelId = selectedChannel.channelId,
+        context = this,
+        orderId = orderId,
+        amount = amount,
+        onResult = { result ->
+            handlePaymentResult(result)
+        }
+    )
 }
 ```
 
@@ -380,6 +387,14 @@ class OrderPaymentActivity : AppCompatActivity() {
      * 
      * SDK已自动查询后端结果，此处只需处理最终状态
      */
+    /**
+     * 处理支付结果
+     * 
+     * SDK已自动处理:
+     * - ✅ 参数校验 (orderId/amount)
+     * - ✅ 异常映射 (网络异常 → 标准错误码)
+     * - ✅ 自动查询后端结果
+     */
     private fun handlePaymentResult(result: PaymentResult) {
         when (result) {
             is PaymentResult.Success -> {
@@ -389,8 +404,19 @@ class OrderPaymentActivity : AppCompatActivity() {
             }
             
             is PaymentResult.Failed -> {
-                // 支付失败
-                showError("支付失败\n${result.errorMessage}")
+                // 支付失败（SDK已格式化错误信息）
+                val errorCode = result.errorCode
+                val errorMessage = result.errorMessage
+                
+                // 判断是否可重试
+                if (result.isRetryable) {
+                    showErrorWithRetry(errorMessage, errorCode)
+                } else {
+                    showError("支付失败\n$errorMessage")
+                }
+                
+                // 上报错误（用于统计分析）
+                reportPaymentError(errorCode, errorMessage)
             }
             
             is PaymentResult.Cancelled -> {
@@ -405,6 +431,18 @@ class OrderPaymentActivity : AppCompatActivity() {
                 navigateToOrderListPage()
             }
         }
+    }
+    
+    private fun showErrorWithRetry(message: String, errorCode: String) {
+        // 显示错误提示 + 重试按钮
+    }
+    
+    private fun reportPaymentError(errorCode: String, message: String) {
+        // 上报到统计平台
+        analytics.logEvent("payment_error", bundleOf(
+            "error_code" to errorCode,
+            "error_message" to message
+        ))
     }
     
     private fun showLoading(message: String) {
@@ -534,35 +572,76 @@ class EnterpriseApplication : Application() {
 
 ### Q2: 如何验证支付结果？
 
-**A:** SDK已自动处理支付结果验证（当`autoQueryResult=true`时）：
+**A:** SDK默认会自动处理支付结果验证（含参数校验和异常映射）：
 
 ```kotlin
-when (result) {
-    is PaymentResult.Success -> {
-        // SDK已自动查询后端确认支付成功
-        // 可以直接跳转到成功页面
-        navigateToSuccessPage()
-    }
-    is PaymentResult.Processing -> {
-        // SDK查询超时，支付状态待确认
-        // 建议跳转到订单列表，稍后查询
-        navigateToOrderList()
-    }
-}
-```
-
-如果关闭了自动查询（`autoQueryResult=false`），则需要手动查询：
-
-```kotlin
-when (result) {
-    is PaymentResult.Success -> {
-        // 手动查询后端确认
-        lifecycleScope.launch {
-            val status = PaymentSDK.getApiService().queryOrderStatus(orderId)
-            if (status.isSuccess && status.getOrNull()?.status == "paid") {
-                // 确认支付成功
+PaymentSDK.payWithChannel(
+    channelId = "wechat_pay",
+    context = this,
+    orderId = orderId,
+    amount = amount,
+    onResult = { result ->
+        when (result) {
+            is PaymentResult.Success -> {
+                // SDK已自动查询后端确认支付成功
+                // 可以直接跳转到成功页面
                 navigateToSuccessPage()
             }
+            is PaymentResult.Processing -> {
+                // SDK查询超时，支付状态待确认
+                // 建议跳转到订单列表，稍后查询
+                navigateToOrderList()
+            }
+            is PaymentResult.Failed -> {
+                // SDK已自动处理:
+                // 1. 参数校验(orderId/amount/channelId)
+                // 2. 异常映射(网络/SSL异常 → 标准错误码)
+                // 3. 错误格式化(标准信息 + 详情)
+                
+                // 根据错误码处理
+                when (result.errorCode) {
+                    PaymentErrorCode.ORDER_ID_EMPTY.code,
+                    PaymentErrorCode.ORDER_AMOUNT_INVALID.code,
+                    PaymentErrorCode.PARAMS_INVALID.code -> {
+                        // 参数错误，不应重试
+                        showError("参数错误: ${result.errorMessage}")
+                    }
+                    PaymentErrorCode.NETWORK_TIMEOUT.code,
+                    PaymentErrorCode.NETWORK_ERROR.code -> {
+                        // 网络错误，可重试
+                        showRetryDialog(result.errorMessage)
+                    }
+                    else -> {
+                        showError(result.errorMessage)
+                    }
+                }
+            }
+            is PaymentResult.Cancelled -> {
+                // 用户取消
+                Toast.makeText(this, "已取消支付", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+)
+```
+
+如果需要手动查询订单状态(例如在订单列表中刷新)：
+
+```kotlin
+lifecycleScope.launch {
+    val result = PaymentSDK.queryOrderStatus(orderId)
+    when (result) {
+        is PaymentResult.Success -> {
+            updateOrderStatus("已支付")
+        }
+        is PaymentResult.Failed -> {
+            updateOrderStatus("支付失败")
+        }
+        is PaymentResult.Cancelled -> {
+            updateOrderStatus("已取消")
+        }
+        is PaymentResult.Processing -> {
+            updateOrderStatus("处理中")
         }
     }
 }
@@ -593,6 +672,7 @@ class CustomPayChannel : IPaymentChannel {
     override val channelIcon = R.drawable.ic_custom
     override val requiresApp = false
     override val packageName = null
+    override val priority = 50  // 优先级(可选)
     
     override fun pay(
         context: Context,
@@ -602,11 +682,24 @@ class CustomPayChannel : IPaymentChannel {
     ): PaymentResult {
         // 实现支付逻辑
         // 例如：打开WebView、调起第三方APP等
+        
+        // 对于需要跳转第三方APP的渠道
+        // 返回Success表示成功调起,实际结果由SDK通过后端查询获取
+        val intent = Intent().apply {
+            // 设置支付参数
+        }
+        context.startActivity(intent)
+        
         return PaymentResult.Success(orderId)
+    }
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        // 如果requiresApp=false,默认实现返回true
+        return true
     }
 }
 
-// 注册
+// 在Application中注册
 PaymentSDK.registerChannel(CustomPayChannel())
 ```
 
@@ -615,12 +708,21 @@ PaymentSDK.registerChannel(CustomPayChannel())
 **A:** 不调用`showPaymentSheet()`，自己获取渠道列表并实现UI：
 
 ```kotlin
+// 1. 获取可用渠道
 val channels = PaymentSDK.getAvailableChannels(this)
 
-// 使用自定义UI展示channels
+// 2. 使用自定义UI展示channels
 customUI.showChannels(channels) { selectedChannel ->
-    // 执行支付
-    selectedChannel.pay(...)
+    // 3. 使用SDK执行支付(推荐)
+    PaymentSDK.payWithChannel(
+        channelId = selectedChannel.channelId,
+        context = this,
+        orderId = orderId,
+        amount = amount,
+        onResult = { result ->
+            handlePaymentResult(result)
+        }
+    )
 }
 ```
 
@@ -628,7 +730,7 @@ customUI.showChannels(channels) { selectedChannel ->
 
 ### 功能说明
 
-SDK支持在支付渠道返回成功后，**自动查询后端支付结果**，确保返回给调用方的是最终的支付状态。
+SDK默认会在用户从第三方APP返回后，**自动查询后端支付结果**，确保返回给调用方的是最终的支付状态。
 
 **为什么需要自动查询？**
 - 第三方支付SDK返回成功，不代表支付真正成功
@@ -640,36 +742,44 @@ SDK支持在支付渠道返回成功后，**自动查询后端支付结果**，�
 ```
 1. 调用 PaymentSDK.payWithChannel()
    ↓
-2. SDK调起支付渠道（微信/支付宝等）
+2. SDK启动透明Activity(PaymentLifecycleActivity)
    ↓
-3. 支付渠道返回成功
+3. 调起支付渠道（微信/支付宝等）
    ↓
-4. SDK自动查询后端结果（轮询）
+4. 用户跳转到第三方APP → Activity.onPause
    ↓
-5. 返回最终支付状态给调用方
+5. 用户完成支付并返回 → Activity.onResume
+   ↓
+6. SDK延迟200ms后自动查询后端结果（轮询重试）
+   ↓
+7. 返回最终支付状态给调用方
+   ↓
+8. 关闭透明Activity
 ```
 
 ### 配置参数
 
 ```kotlin
 val config = PaymentConfig.Builder()
-    // 是否启用自动查询（默认true，推荐开启）
-    .setAutoQueryResult(true)
+    .setAppId("your_app_id")
+    .setBusinessLine("retail")
+    .setApiBaseUrl("https://api.example.com")
     
-    // 最大重试次数（默认3次）
-    // 支付渠道返回成功后，最多查询3次后端
-    .setMaxQueryRetries(3)
+    // 查询配置(SDK默认会自动查询,无需手动配置)
+    .setMaxQueryRetries(3)        // 最大重试次数(默认3次)
+    .setQueryIntervalMs(2000)     // 查询间隔(默认2000ms)
+    .setQueryTimeoutMs(10000)     // 查询超时(默认10000ms)
     
-    // 查询间隔（默认2000ms）
-    // 每次查询之间等待2秒
-    .setQueryIntervalMs(2000)
-    
-    // 查询总超时时间（默认10000ms）
-    // 超过10秒仍未得到明确结果，返回Processing状态
-    .setQueryTimeoutMs(10000)
+    // 订单锁超时时间(默认5分钟)
+    .setOrderLockTimeoutMs(300000)
     
     .build()
 ```
+
+**说明:**
+- SDK默认启用自动查询,无需额外配置
+- 返回时固定延迟200ms,然后开始查询
+- `initialQueryDelayMs`为预留配置,实际未使用
 
 ### 支付结果状态
 
@@ -683,88 +793,79 @@ val config = PaymentConfig.Builder()
 ### 使用示例
 
 ```kotlin
-lifecycleScope.launch {
-    val result = PaymentSDK.payWithChannel(
-        channelId = "wechat_pay",
-        context = this@Activity,
-        orderId = orderId,
-        amount = amount
-    )
-    
-    when (result) {
-        is PaymentResult.Success -> {
-            // SDK已确认后端支付成功
-            Toast.makeText(this, "支付成功", Toast.LENGTH_SHORT).show()
-            navigateToSuccessPage()
-        }
-        
-        is PaymentResult.Failed -> {
-            Toast.makeText(this, "支付失败", Toast.LENGTH_SHORT).show()
-        }
-        
-        is PaymentResult.Cancelled -> {
-            Toast.makeText(this, "已取消支付", Toast.LENGTH_SHORT).show()
-        }
-        
-        is PaymentResult.Processing -> {
-            // SDK查询超时，支付可能成功也可能失败
-            // 建议跳转到订单列表，用户可稍后查看订单状态
-            Toast.makeText(
-                this, 
-                "支付处理中，请在订单列表查看结果", 
-                Toast.LENGTH_LONG
-            ).show()
-            navigateToOrderList()
-        }
-    }
-}
-```
-
-### 关闭自动查询
-
-如果不需要自动查询功能，可以关闭：
-
-```kotlin
-val config = PaymentConfig.Builder()
-    .setAutoQueryResult(false)  // 关闭自动查询
-    .build()
-```
-
-关闭后，SDK将直接返回支付渠道的结果，**调用方需要自己查询后端确认支付状态**：
-
-```kotlin
-when (result) {
-    is PaymentResult.Success -> {
-        // 手动查询后端
-        lifecycleScope.launch {
-            val apiService = PaymentSDK.getApiService()
-            val statusResult = apiService.queryOrderStatus(orderId)
+// 使用回调方式(推荐)
+PaymentSDK.payWithChannel(
+    channelId = "wechat_pay",
+    context = this,
+    orderId = orderId,
+    amount = amount,
+    onResult = { result ->
+        when (result) {
+            is PaymentResult.Success -> {
+                // SDK已确认后端支付成功
+                Toast.makeText(this, "支付成功", Toast.LENGTH_SHORT).show()
+                navigateToSuccessPage()
+            }
             
-            if (statusResult.isSuccess) {
-                val orderStatus = statusResult.getOrNull()
-                when (orderStatus?.status) {
-                    "paid" -> {
-                        // 支付成功
-                        navigateToSuccessPage()
-                    }
-                    "pending" -> {
-                        // 待支付
-                        showPendingMessage()
-                    }
-                    else -> {
-                        // 其他状态
-                        handleOtherStatus()
-                    }
-                }
+            is PaymentResult.Failed -> {
+                Toast.makeText(this, "支付失败: ${result.errorMessage}", Toast.LENGTH_SHORT).show()
+            }
+            
+            is PaymentResult.Cancelled -> {
+                Toast.makeText(this, "已取消支付", Toast.LENGTH_SHORT).show()
+            }
+            
+            is PaymentResult.Processing -> {
+                // SDK查询超时，支付可能成功也可能失败
+                // 建议跳转到订单列表，用户可稍后查看订单状态
+                Toast.makeText(
+                    this, 
+                    "支付处理中，请在订单列表查看结果", 
+                    Toast.LENGTH_LONG
+                ).show()
+                navigateToOrderList()
             }
         }
     }
+)
+```
+
+### 手动查询订单状态
+
+SDK提供`queryOrderStatus`方法供手动查询(例如在订单列表中刷新状态):
+
+```kotlin
+lifecycleScope.launch {
+    val result = PaymentSDK.queryOrderStatus(orderId)
+    when (result) {
+        is PaymentResult.Success -> {
+            // 支付成功
+            updateOrderStatus("已支付")
+        }
+        is PaymentResult.Failed -> {
+            // 支付失败
+            updateOrderStatus("支付失败")
+        }
+        is PaymentResult.Cancelled -> {
+            // 已取消
+            updateOrderStatus("已取消")
+        }
+        is PaymentResult.Processing -> {
+            // 处理中
+            updateOrderStatus("处理中")
+        }
+    }
 }
 ```
 
+**注意:**
+- `queryOrderStatus`会自动去重,同一订单的并发查询会共享结果
+- 支持查询重试和超时控制
+- 配置参数与自动查询相同(`maxQueryRetries`、`queryIntervalMs`、`queryTimeoutMs`)
+
 ### 最佳实践
 
-1. **推荐开启自动查询**：大多数场景下应该启用`autoQueryResult`，简化调用方逻辑
+1. **使用回调方式**：推荐使用`payWithChannel`的回调版本,SDK自动处理生命周期和查询
 
 2. **合理设置重试参数**：
    - 网络良好：`maxQueryRetries=3`，`queryIntervalMs=2000`
@@ -773,9 +874,15 @@ when (result) {
 3. **处理Processing状态**：
    - 提示用户"支付处理中"
    - 跳转到订单列表页
-   - 提供"刷新订单状态"功能
+   - 提供"刷新订单状态"功能(使用`queryOrderStatus`)
 
-4. **后端优化**：确保订单状态查询接口响应快速（< 500ms）
+4. **防止重复支付**：
+   - SDK会自动加锁防止重复支付
+   - 可用`isOrderPaying(orderId)`检查订单是否正在支付
+
+5. **后端优化**：确保订单状态查询接口响应快速（< 500ms）
+
+6. **超时释放**：订单锁会在`orderLockTimeoutMs`(默认5分钟)后自动释放
 
 ## 注意事项
 

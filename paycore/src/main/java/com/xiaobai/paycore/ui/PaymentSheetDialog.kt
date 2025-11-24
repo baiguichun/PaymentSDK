@@ -13,6 +13,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.PaymentSDK
+import com.xiaobai.paycore.PaymentErrorCode
 import com.xiaobai.paycore.R
 import com.xiaobai.paycore.channel.IPaymentChannel
 import kotlinx.coroutines.CoroutineScope
@@ -287,8 +288,12 @@ class PaymentSheetDialog(
                 )
                 
                 if (createOrderResult.isFailure) {
-                    val error = createOrderResult.exceptionOrNull()
-                    throw Exception(error?.message ?: "创单失败")
+                    val failure = PaymentSDK.mapExceptionToFailed(
+                        createOrderResult.exceptionOrNull(),
+                        PaymentErrorCode.SERVER_ERROR
+                    )
+                    handleFailure(failure)
+                    return@launch
                 }
                 
                 val paymentParams = createOrderResult.getOrNull() ?: emptyMap()
@@ -334,39 +339,55 @@ class PaymentSheetDialog(
                 
             } catch (e: Exception) {
                 // 创单或支付异常
-                if (PaymentSDK.getConfig().debugMode) {
-                    println("创单或支付异常: ${e.message}")
-                    e.printStackTrace()
-                }
-                
-                isPaymentExecuting = false
-                payButton.text = "立即支付"
-                updatePayButtonState()
-                
-                Toast.makeText(
-                    activity,
-                    "支付失败: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
-                
-                // 通知失败
-                try {
-                    onPaymentResult(PaymentResult.Failed(e.message ?: "创单失败"))
-                } catch (ex: Exception) {
-                    if (PaymentSDK.getConfig().debugMode) {
-                        println("失败回调异常: ${ex.message}")
-                    }
-                }
-                
-                // 关闭对话框
-                try {
-                    if (dialog.isShowing) {
-                        dialog.dismiss()
-                    }
-                } catch (ex: Exception) {
-                    // 忽略 dismiss 异常
-                }
+                val failure = PaymentSDK.mapExceptionToFailed(
+                    e,
+                    PaymentErrorCode.LAUNCH_PAY_FAILED
+                )
+                handleException(failure, e)
             }
+        }
+    }
+
+    private fun handleException(
+        failure: PaymentResult.Failed,
+        throwable: Exception? = null
+    ) {
+        if (PaymentSDK.getConfig().debugMode) {
+            println("创单或支付异常: ${throwable?.message}")
+            throwable?.printStackTrace()
+        }
+        handleFailure(failure)
+    }
+
+    private fun handleFailure(failure: PaymentResult.Failed) {
+        isPaymentExecuting = false
+        payButton.text = "立即支付"
+        updatePayButtonState()
+
+        Toast.makeText(
+            activity,
+            "支付失败: ${failure.errorMessage}",
+            Toast.LENGTH_LONG
+        ).show()
+
+        try {
+            onPaymentResult(failure)
+        } catch (ex: Exception) {
+            if (PaymentSDK.getConfig().debugMode) {
+                println("失败回调异常: ${ex.message}")
+            }
+        }
+
+        safeDismiss()
+    }
+
+    private fun safeDismiss() {
+        try {
+            if (dialog.isShowing) {
+                dialog.dismiss()
+            }
+        } catch (_: Exception) {
+            // 忽略 dismiss 异常
         }
     }
     
@@ -393,4 +414,3 @@ class PaymentSheetDialog(
         dialog.dismiss()
     }
 }
-

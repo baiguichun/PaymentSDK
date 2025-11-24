@@ -143,10 +143,12 @@ PaymentSDK.showPaymentSheet(
 直接使用指定渠道发起支付（不显示选择弹窗）。
 
 **SDK会自动：**
-1. 为订单加锁，阻止同一订单重复支付（锁会在 `orderLockTimeoutMs` 后自动释放）
+1. 为订单加锁，阻止同一订单重复支付（锁会在 `orderLockTimeoutMs` 后自动释放，默认5分钟）
 2. 校验渠道是否已注册且可用（需要APP时会检查安装状态）
-3. 启动透明Activity监听用户从第三方APP返回
-4. 返回后按 `maxQueryRetries` / `queryIntervalMs` / `queryTimeoutMs` 查询后端并返回最终 `PaymentResult`
+3. 启动透明Activity(`PaymentLifecycleActivity`)监听用户从第三方APP返回
+4. 返回后固定延迟200ms,然后按 `maxQueryRetries` / `queryIntervalMs` / `queryTimeoutMs` 查询后端并返回最终 `PaymentResult`
+5. 查询同一订单时自动去重,避免重复网络请求
+6. 支付完成后自动释放订单锁
 
 ```kotlin
 fun payWithChannel(
@@ -365,8 +367,8 @@ class Builder {
 | `businessLine` | String | 必填 | 业务线标识 |
 | `apiBaseUrl` | String | 必填 | API基础URL |
 | `debugMode` | Boolean | false | 调试模式 |
-| `networkTimeout` | Long | 30 | 预留配置，当前实现使用固定10s HTTP超时 |
-| `initialQueryDelayMs` | Long | 3000 | 预留配置，自动查询使用固定200ms延迟 |
+| `networkTimeout` | Long | 30(秒) | 网络请求超时时间,实际使用时会转换为毫秒并限制在Int范围内 |
+| `initialQueryDelayMs` | Long | 3000 | 预留配置(未使用),实际自动查询使用固定200ms延迟 |
 | `maxQueryRetries` | Int | 3 | 最大查询重试次数 |
 | `queryIntervalMs` | Long | 2000 | 查询间隔（毫秒） |
 | `queryTimeoutMs` | Long | 10000 | 查询超时时间（毫秒） |
@@ -522,14 +524,248 @@ fun isAppInstalled(context: Context): Boolean
 
 #### getSupportedFeatures()
 
-获取渠道支持的功能。
+获取渠道支持的功能(可选实现)。
 
 ```kotlin
-fun getSupportedFeatures(): List<PaymentFeature>
+fun getSupportedFeatures(): List<PaymentFeature> {
+    return listOf(PaymentFeature.BASIC_PAY)  // 默认实现
+}
 ```
 
 **返回：**
-- 支持的功能列表
+- 支持的功能列表,默认返回`[BASIC_PAY]`
+
+---
+
+## 网络服务类
+
+### PaymentApiService
+
+支付网络API服务,基于Retrofit + OkHttp实现。
+
+**关键特性:**
+- 使用`ScalarsConverterFactory`获取原始JSON字符串,再用`JSONObject`手动解析
+- 支持请求签名(HMAC-SHA256) + 响应验签
+- 支持证书绑定(Certificate Pinning)
+- 解析失败直接抛出异常,返回`Result.failure`便于业务处理
+
+#### getPaymentChannels()
+
+获取指定业务线的支付渠道配置。
+
+```kotlin
+suspend fun getPaymentChannels(
+    businessLine: String,
+    appId: String
+): Result<List<PaymentChannelMeta>>
+```
+
+**参数:**
+- `businessLine`: 业务线标识
+- `appId`: 应用ID
+
+**返回:**
+- `Result.success(channels)`: 成功时返回渠道配置列表
+- `Result.failure(exception)`: 失败时返回异常
+
+---
+
+#### createPaymentOrder()
+
+创建支付订单,获取支付所需参数。
+
+```kotlin
+suspend fun createPaymentOrder(
+    orderId: String,
+    channelId: String,
+    amount: String,
+    extraParams: Map<String, Any> = emptyMap()
+): Result<Map<String, Any>>
+```
+
+**参数:**
+- `orderId`: 订单ID
+- `channelId`: 支付渠道ID
+- `amount`: 支付金额(字符串格式)
+- `extraParams`: 额外参数
+
+**返回:**
+- `Result.success(params)`: 创建成功,返回支付参数(如微信prepay_id、支付宝order_info等)
+- `Result.failure(exception)`: 创建失败
+
+---
+
+#### queryOrderStatus()
+
+查询订单支付状态。
+
+```kotlin
+suspend fun queryOrderStatus(
+    orderId: String,
+    paymentId: String? = null
+): Result<OrderStatusInfo>
+```
+
+**参数:**
+- `orderId`: 订单ID
+- `paymentId`: 支付ID(可选)
+
+**返回:**
+- `Result.success(orderStatus)`: 查询成功
+- `Result.failure(exception)`: 查询失败
+
+**OrderStatusInfo数据结构:**
+```kotlin
+data class OrderStatusInfo(
+    val orderId: String,
+    val paymentId: String?,
+    val channelId: String?,
+    val channelName: String?,
+    val amount: String?,
+    val status: String, // "pending"-待支付, "paid"-已支付, "cancelled"-已取消, "failed"-支付失败
+    val transactionId: String?,
+    val paidTime: Long,
+    val createTime: Long
+)
+```
+
+---
+
+## 并发控制类
+
+### PaymentLockManager
+
+订单锁管理器,防止重复支付。
+
+**特性:**
+- 使用`ConcurrentHashMap.newKeySet()`存储支付中的订单
+- 使用`ReentrantLock`保证并发安全
+- 支持订单锁超时自动释放(防止死锁)
+- 可设置超时回调用于日志记录
+
+#### tryLockOrder()
+
+尝试锁定订单。
+
+```kotlin
+fun tryLockOrder(orderId: String, timeoutMs: Long = 300000): Boolean
+```
+
+**参数:**
+- `orderId`: 订单ID
+- `timeoutMs`: 超时时间(毫秒),默认300000(5分钟)
+
+**返回:**
+- `true`: 锁定成功,可以继续支付
+- `false`: 订单已被锁定,拒绝重复支付
+
+**示例:**
+```kotlin
+if (!PaymentLockManager.tryLockOrder(orderId, 300000)) {
+    return PaymentResult.Failed("订单正在支付中,请勿重复操作")
+}
+```
+
+---
+
+#### unlockOrder()
+
+释放订单锁。
+
+```kotlin
+fun unlockOrder(orderId: String)
+```
+
+**说明:**
+- 支付完成后(无论成功失败)都应该释放订单锁
+- SDK会自动调用,通常不需要手动调用
+
+---
+
+#### isOrderPaying()
+
+检查订单是否正在支付中。
+
+```kotlin
+fun isOrderPaying(orderId: String): Boolean
+```
+
+---
+
+#### setOnTimeoutCallback()
+
+设置超时回调(可选,用于日志记录)。
+
+```kotlin
+fun setOnTimeoutCallback(callback: ((orderId: String) -> Unit)?)
+```
+
+**示例:**
+```kotlin
+PaymentLockManager.setOnTimeoutCallback { orderId ->
+    Log.w("Payment", "订单锁超时自动释放: $orderId")
+}
+```
+
+---
+
+## 安全类
+
+### SecuritySigner
+
+请求签名/验签辅助类。
+
+**签名规范:**
+```
+canonicalString = path + "\n" + sortedQuery + "\n" + body + "\n" + timestamp + "\n" + nonce
+signature = Base64(HMAC-SHA256(canonicalString, signingSecret))
+```
+
+**请求头:**
+- `X-Signature`: 签名(Base64编码)
+- `X-Timestamp`: 时间戳(毫秒)
+- `X-Nonce`: 随机数(16字节Base64编码)
+
+**响应验签(可选):**
+- 验证`X-Server-Signature`头
+- 检查`X-Server-Timestamp`时间偏差不超过`maxServerClockSkewMs`
+- canonical string格式: `path + "\n" + sortedQuery + "\n" + body + "\n" + serverTimestamp`
+
+#### buildRequestHeaders()
+
+构造请求签名头。
+
+```kotlin
+fun buildRequestHeaders(
+    path: String,
+    query: Map<String, String?> = emptyMap(),
+    body: String? = null
+): Map<String, String>
+```
+
+**返回:**
+- 包含签名、时间戳、随机数的请求头Map
+- 如果未启用签名则返回空Map
+
+---
+
+#### verifyResponseSignature()
+
+验证响应签名。
+
+```kotlin
+fun verifyResponseSignature(
+    responseSignature: String?,
+    responseTimestamp: String?,
+    path: String,
+    query: Map<String, String?> = emptyMap(),
+    body: String? = null
+): Result<Unit>
+```
+
+**返回:**
+- `Result.success(Unit)`: 验签成功或未启用响应验签
+- `Result.failure(exception)`: 验签失败
 
 ---
 
@@ -559,13 +795,34 @@ data class Success(val transactionId: String) : PaymentResult()
 ```kotlin
 data class Failed(
     val errorMessage: String,
-    val errorCode: String? = null
+    val errorCode: String = PaymentErrorCode.UNKNOWN_ERROR.code
 ) : PaymentResult()
 ```
 
 **属性：**
-- `errorMessage`: 错误信息
-- `errorCode`: 错误码（可选）
+- `errorMessage: String` - 错误描述（格式: "标准信息" 或 "标准信息: 详情"）
+- `errorCode: String` - 标准错误码（如 "1001"，默认"5003"）
+
+**新增计算属性**:
+```kotlin
+val isRetryable: Boolean  // 是否可重试（根据errorCode自动判断）
+val errorCodeEnum: PaymentErrorCode?  // 错误码枚举对象
+```
+
+**错误信息格式**:
+```kotlin
+// 格式1: 仅标准信息
+"订单正在支付中，请勿重复操作"
+
+// 格式2: 标准信息 + 详情
+"支付渠道不存在: wechat_pay"
+"网络请求超时: Read timed out"
+```
+
+**SDK自动处理** (v2.0.3+):
+- ✅ **参数校验**: orderId/amount/channelId自动验证
+- ✅ **异常映射**: 网络/SSL异常 → 标准错误码
+- ✅ **错误格式化**: 标准信息 + 底层异常详情
 
 ---
 
@@ -764,18 +1021,55 @@ class UnionPayChannel : IPaymentChannel {
 
 ## 异常处理
 
-- SDK不会向外抛异常，错误通过 `PaymentResult.Failed` 返回（包含网络/解析等错误）
-- `errorMessage` 包含具体原因；`errorCode` 由渠道或后端定义（核心模块未内置固定枚举）
-- 查询超时会返回 `PaymentResult.Processing`，可提示用户稍后在订单列表中查看
-- 透明 Activity 若被系统回收且未能正常结束，会兜底回调 `PaymentResult.Failed("支付流程已中断，请重试")` 并清理回调，避免悬挂
+- **SDK不向外抛异常**: 所有错误通过 `PaymentResult.Failed` 返回（包含网络/解析/业务错误）
+- **错误信息**: `errorMessage` 包含具体原因；`errorCode` 可选,由渠道或后端定义
+- **查询超时**: 返回 `PaymentResult.Processing`,建议提示用户稍后在订单列表中查看
+- **透明Activity兜底**: 若被系统回收且未能正常结束,会兜底回调 `PaymentResult.Failed("支付流程已中断，请重试")` 并清理回调,避免悬挂
+- **响应解析失败**: 渠道列表/订单状态等接口响应解析失败会直接返回 `Result.failure`,调用方可据此提示用户或重试
 
 ---
 
-## 线程安全
+## 线程安全与并发控制
 
-- 订单级锁：`PaymentLockManager.tryLockOrder()` 防止同一订单重复支付，超时自动释放
-- 查询去重：同一订单共享同一个查询协程，避免重复请求
-- UI回调：支付结果由透明Activity在主线程回调，便于直接更新界面
+### 订单锁机制
+
+- **订单级锁**: `PaymentLockManager.tryLockOrder()` 防止同一订单重复支付
+- **超时释放**: 订单锁会在 `orderLockTimeoutMs`(默认5分钟)后自动释放,避免死锁
+- **线程安全**: 使用 `ReentrantLock` + `ConcurrentHashMap` 保证并发安全
+- **回调通知**: 可通过 `setOnTimeoutCallback` 监听锁超时事件
+
+### 查询去重机制
+
+- **共享结果**: 同一订单的并发查询会复用同一个 `CompletableDeferred`,避免重复网络请求
+- **自动清理**: 查询完成后自动从 `activeQueries` 中移除,防止内存泄漏
+- **等待机制**: 后发起的查询会等待首次查询完成,共享相同结果
+
+### UI回调
+
+- **主线程回调**: 支付结果由透明Activity在主线程回调,便于直接更新UI
+- **协程作用域**: `PaymentLifecycleActivity` 使用独立协程作用域,`onDestroy` 时自动取消
+
+### 最佳实践
+
+```kotlin
+// ✅ 正确: 使用SDK的自动锁机制
+PaymentSDK.payWithChannel(
+    channelId = "wechat_pay",
+    context = context,
+    orderId = orderId,
+    amount = amount,
+    onResult = { result -> handleResult(result) }
+)
+
+// ✅ 正确: 检查订单是否正在支付
+if (PaymentSDK.isOrderPaying(orderId)) {
+    Toast.makeText(context, "订单正在支付中", Toast.LENGTH_SHORT).show()
+    return
+}
+
+// ❌ 错误: 不要手动管理订单锁(SDK会自动处理)
+// PaymentLockManager.tryLockOrder(orderId)  // 不要这样做
+```
 
 ---
 
