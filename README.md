@@ -1,259 +1,426 @@
-# PaymentCore - 聚合支付SDK
+# PaymentSDK - Android聚合支付SDK
 
-[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](https://github.com/xiaobai/paymentcore)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Android](https://img.shields.io/badge/platform-Android-brightgreen.svg)](https://developer.android.com)
-[![Kotlin](https://img.shields.io/badge/language-Kotlin-orange.svg)](https://kotlinlang.org)
+> **版本**: v3.0.0  
+> **架构**: Clean Architecture + 模块化  
+> **最低Android版本**: API 21 (Android 5.0)
 
-一个现代化、生产级别的Android聚合支付SDK，支持微信、支付宝、银联等多种支付渠道。
+一个基于Clean Architecture设计的Android聚合支付SDK，支持多种支付渠道（微信、支付宝、银联等），提供统一的API接口和完善的错误处理机制。
 
-## ✨ 亮点特性
+---
 
-### 🎯 智能生命周期管理
-- 自动监听用户从第三方APP返回
-- 自动查询支付结果
-- 完全透明，用户无感知
+## ✨ 核心特性
 
-### 🚀 极简API
-- 一行代码完成支付
-- 自动执行整个支付流程
-- 回调直接返回最终结果
+### 🏗️ Clean Architecture设计
+- **模块化架构**: 6个独立模块（core、channel-spi、domain、data、network-security、ui-kit）
+- **依赖注入**: 使用Koin管理依赖，支持外部容器
+- **Repository模式**: 抽象数据访问，易于测试和替换
+- **UseCase封装**: 业务逻辑清晰，职责单一
 
-### 🏗️ 现代化架构
-- 透明Activity监听生命周期
-- 订单级锁防止重复支付
-- 线程安全的并发控制
+### 🎯 简洁易用的API
+- **一行代码发起支付**: `PaymentSDK.showPaymentSheet()`
+- **自动化流程**: 自动调起支付、监听返回、查询结果
+- **支持任何Activity**: 不限于FragmentActivity
+- **回调式设计**: 符合Android开发习惯
 
-### 🔌 灵活集成
-- 支持任何Activity类型
-- 模块化支付渠道
-- 按需集成，减小APK体积
+### 🔒 生产级安全特性
+- **请求签名**: HMAC-SHA256签名机制
+- **响应验签**: 防止数据篡改
+- **证书绑定**: Certificate Pinning防中间人攻击
+- **防重放攻击**: 时间戳+随机数机制
 
-## 📱 快速开始
+### 🚀 高性能与可靠性
+- **并发控制**: 订单锁防止重复支付
+- **查询去重**: 避免重复网络请求
+- **自动重试**: 智能轮询查询支付结果
+- **异常兜底**: Activity回收自动处理
+
+### 📊 标准化错误处理
+- **40+标准错误码**: 分类清晰（1xxx-6xxx）
+- **智能异常映射**: 网络异常自动映射到标准错误码
+- **详细错误信息**: 包含底层异常详情
+- **可重试标记**: 自动判断错误是否可重试
+
+---
+
+## 🚀 快速开始
 
 ### 1. 添加依赖
 
 ```gradle
 dependencies {
-    implementation project(":paycore")
+    // 只需依赖ui-kit模块（包含所有必需模块）
+    implementation(project(":ui-kit"))
 }
 ```
 
-### 2. 初始化
+或使用远程依赖（发布后）：
+```gradle
+dependencies {
+    implementation("com.xiaobai:payment-sdk:3.0.0")
+}
+```
+
+### 2. 初始化SDK
+
+在Application中初始化：
 
 ```kotlin
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         
+        // 构建配置
         val config = PaymentConfig.Builder()
             .setAppId("your_app_id")
             .setBusinessLine("retail")
             .setApiBaseUrl("https://api.example.com")
             .setDebugMode(BuildConfig.DEBUG)
-            .setMaxQueryRetries(3)       // 查询重试次数(默认3次)
-            .setQueryIntervalMs(2000)    // 查询间隔(默认2秒)
-            .setQueryTimeoutMs(10000)    // 查询超时(默认10秒)
-            .setOrderLockTimeoutMs(300000) // 订单锁超时(默认5分钟)
-            // 可选：启用签名/验签 + 证书Pinning
+            .setNetworkTimeout(30)
             .setSecurityConfig(
                 SecurityConfig(
                     enableSignature = true,
+                    signingSecret = "your_secret_key",
                     enableResponseVerification = true,
-                    signingSecret = "shared_secret_from_server",
                     enableCertificatePinning = true,
                     certificatePins = mapOf(
-                        "api.example.com" to listOf("sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                        "api.example.com" to listOf("sha256/AAAA...")
                     )
                 )
             )
             .build()
         
+        // 初始化SDK
         PaymentSDK.init(this, config)
         
-        // 注册已集成的支付渠道
-        PaymentSDK.registerChannels(listOf(
-            WeChatPayChannel(),
-            AlipayChannel(),
-            UnionPayChannel()
-        ))
+        // 注册支付渠道
+        PaymentSDK.registerChannel(WeChatPayChannel())
+        PaymentSDK.registerChannel(AlipayChannel())
+        PaymentSDK.registerChannel(UnionPayChannel())
     }
 }
+```
+
+**支持外部Koin容器**（可选）：
+```kotlin
+// 如果宿主APP已使用Koin，可共享容器
+val koinApp = startKoin {
+    androidContext(this@MyApplication)
+    modules(appModule, paymentModule(config))
+}
+
+PaymentSDK.init(this, config, koinApp)
 ```
 
 ### 3. 发起支付
 
+#### 方式1：使用支付渠道选择对话框（推荐）
+
 ```kotlin
-// 显示支付选择弹窗，SDK自动完成支付
 PaymentSDK.showPaymentSheet(
     activity = this,
-    orderId = orderId,
-    amount = amount,
+    orderId = "ORDER_20250124_001",
+    amount = BigDecimal("99.99"),
     onPaymentResult = { result ->
         when (result) {
             is PaymentResult.Success -> {
+                // 支付成功
                 Toast.makeText(this, "支付成功", Toast.LENGTH_SHORT).show()
+                navigateToSuccessPage()
             }
+            
             is PaymentResult.Failed -> {
-                Toast.makeText(this, "支付失败: ${result.errorMessage}", Toast.LENGTH_SHORT).show()
+                // 支付失败（SDK已自动处理参数校验、异常映射）
+                Toast.makeText(this, result.errorMessage, Toast.LENGTH_SHORT).show()
+                
+                // 判断是否可重试
+                if (result.isRetryable) {
+                    showRetryButton()
+                }
             }
+            
             is PaymentResult.Cancelled -> {
+                // 用户取消
                 Toast.makeText(this, "支付已取消", Toast.LENGTH_SHORT).show()
             }
+            
             is PaymentResult.Processing -> {
-                // SDK查询超时，引导用户查看订单列表
-                Toast.makeText(this, "支付处理中，请稍后查询订单", Toast.LENGTH_LONG).show()
+                // 查询超时，稍后在订单列表查看
+                Toast.makeText(this, result.message, Toast.LENGTH_LONG).show()
+                navigateToOrderList()
             }
         }
     },
     onCancelled = {
-        Toast.makeText(this, "已取消", Toast.LENGTH_SHORT).show()
+        // 用户关闭对话框
+        Toast.makeText(this, "已取消选择", Toast.LENGTH_SHORT).show()
     }
 )
 ```
 
-就这么简单！✅
-
-## 📚 文档
-
-- [完整README](./paycore/docs/README.md) - 详细功能说明
-- [API文档](./paycore/docs/API.md) - 完整API参考
-- [集成指南](./paycore/docs/INTEGRATION_GUIDE.md) - 详细集成步骤
-- [架构设计](./paycore/docs/ARCHITECTURE.md) - 架构说明
-- [渠道实现指南](./paycore/docs/CHANNEL_IMPLEMENTATION_GUIDE.md) - 🆕 支付渠道实现示例
-- [错误码指南](./paycore/docs/ERROR_CODE_GUIDE.md) - 🆕 标准化错误码说明
-- [变更日志](./paycore/docs/CHANGELOG.md) - 版本历史
-- [迁移指南](./paycore/docs/MIGRATION_GUIDE_V2.md) - 从v1.x迁移
-
-## 🎯 核心特性详解
-
-### 透明Activity生命周期监听
-
-SDK使用透明Activity自动监听用户从第三方APP返回：
-
-```
-用户调起支付 → 启动透明Activity → 跳转第三方APP
-→ 用户完成支付 → 返回APP → onResume自动触发
-→ 延迟查询结果 → 返回最终状态
-```
-
-**优势：**
-- ✅ 完全自动化，无需手动监听
-- ✅ 对用户完全透明
-- ✅ 支持有UI和无UI场景
-
-### 防重复支付
-
-订单级锁机制，100%防止重复支付：
+#### 方式2：使用指定渠道支付
 
 ```kotlin
-// SDK自动处理
-if (!PaymentLockManager.tryLockOrder(orderId)) {
-    return PaymentResult.Failed("订单正在支付中")
-}
-```
-
-### 自动APP检测
-
-SDK自动检测第三方APP是否安装，只显示可用渠道。
-
-## 🔄 v2.0 重大更新
-
-### API简化
-
-**v1.x:**
-```kotlin
-showPaymentSheet(
-    onChannelSelected = { channel ->
-        lifecycleScope.launch {
-            val result = payWithChannel(...)
-            handleResult(result)
-        }
-    }
-)
-```
-
-**v2.0:**
-```kotlin
-showPaymentSheet(
-    onPaymentResult = { result ->
-        handleResult(result)  // ✅ 简化50%
-    }
-)
-```
-
-### 支持任何Activity
-
-```kotlin
-// ✅ v2.0支持
-class MainActivity : Activity() { }
-class MyActivity : AppCompatActivity() { }
-class ComposeActivity : ComponentActivity() { }
-```
-
-### 生命周期自动管理
-
-```kotlin
-// v2.0: 使用回调方式,SDK自动监听用户返回并查询结果
 PaymentSDK.payWithChannel(
     channelId = "wechat_pay",
     context = this,
-    orderId = orderId,
-    amount = amount,
+    orderId = "ORDER_20250124_001",
+    amount = BigDecimal("99.99"),
     onResult = { result ->
-        // ✅ SDK已完成生命周期监听和结果查询
-        when (result) {
-            is PaymentResult.Success -> {
-                Toast.makeText(this, "支付成功", Toast.LENGTH_SHORT).show()
-            }
-            is PaymentResult.Failed -> {
-                Toast.makeText(this, "支付失败", Toast.LENGTH_SHORT).show()
-            }
-            is PaymentResult.Cancelled -> {
-                Toast.makeText(this, "支付已取消", Toast.LENGTH_SHORT).show()
-            }
-            is PaymentResult.Processing -> {
-                Toast.makeText(this, "支付处理中", Toast.LENGTH_SHORT).show()
-            }
-        }
+        handlePaymentResult(result)
     }
 )
 ```
 
-## 📊 项目结构
-
-```
-paycore/
-├── src/main/java/com/xiaobai/paycore/
-│   ├── PaymentSDK.kt                  # SDK入口
-│   ├── channel/                       # 渠道相关
-│   │   ├── IPaymentChannel.kt         # 渠道接口
-│   │   └── PaymentChannelManager.kt   # 渠道管理
-│   ├── config/
-│   │   └── PaymentConfig.kt           # 配置
-│   ├── network/
-│   │   └── PaymentApiService.kt       # 网络服务
-│   ├── concurrent/
-│   │   └── PaymentLockManager.kt      # 并发控制
-│   └── ui/
-│       ├── PaymentSheetDialog.kt      # 支付选择对话框
-│       ├── PaymentLifecycleActivity.kt # 生命周期监听
-│       └── PaymentChannelAdapter.kt   # 列表适配器
-└── docs/                              # 完整文档
-```
-
-## 🤝 如何自定义支付渠道
-
-实现 `IPaymentChannel` 接口：
+### 4. 手动查询订单状态（可选）
 
 ```kotlin
-class CustomPayChannel : IPaymentChannel {
+lifecycleScope.launch {
+    val result = PaymentSDK.queryOrderStatus("ORDER_20250124_001")
+    when (result) {
+        is PaymentResult.Success -> updateOrderStatus("已支付")
+        is PaymentResult.Failed -> updateOrderStatus("支付失败")
+        is PaymentResult.Processing -> updateOrderStatus("处理中")
+        is PaymentResult.Cancelled -> updateOrderStatus("已取消")
+    }
+}
+```
+
+---
+
+## 📦 模块说明
+
+PaymentSDK采用模块化设计，共6个模块：
+
+| 模块 | 说明 | 依赖要求 |
+|------|------|---------|
+| **ui-kit** | SDK入口、UI组件 | ✅ **对外唯一入口** |
+| core | 核心模型（PaymentResult、PaymentErrorCode） | 内部依赖 |
+| channel-spi | 渠道接口定义 | 内部依赖 |
+| domain | 业务领域层（Repository接口、UseCases） | 内部依赖 |
+| data | 数据访问层（Repository实现、ErrorMapper） | 内部依赖 |
+| network-security | 网络服务、签名验签 | 内部依赖 |
+
+**集成说明**：
+- 宿主APP只需依赖 `ui-kit` 模块
+- `ui-kit` 内部自动依赖所有其他模块
+- 符合Clean Architecture的依赖方向原则
+
+---
+
+## 🏗️ 架构设计
+
+### Clean Architecture分层
+
+```
+┌─────────────┐
+│   ui-kit    │ ← Presentation Layer (SDK入口、Dialog、ViewModel)
+└──────┬──────┘
+       │
+┌──────┴──────┐
+│   domain    │ ← Business Layer (Repository接口、UseCases)
+└──────┬──────┘
+       │
+┌──────┴──────┐
+│    data     │ ← Data Layer (Repository实现、ErrorMapper、DI)
+└──────┬──────┘
+       │
+┌──────┴──────┬───────────────┬──────────────┐
+│  network    │  channel-spi  │    core      │ ← Infrastructure
+└─────────────┴───────────────┴──────────────┘
+```
+
+### 核心设计原则
+
+- **SOLID原则**: 单一职责、开闭、里氏替换、接口隔离、依赖倒置
+- **依赖注入**: 使用Koin管理依赖，易于测试
+- **Repository模式**: 抽象数据访问，业务逻辑与实现分离
+- **UseCase封装**: 每个业务用例独立，职责清晰
+
+---
+
+## 💡 技术栈
+
+| 技术 | 用途 |
+|------|------|
+| Kotlin 2.0+ | 主要开发语言 |
+| Kotlin Coroutines | 异步编程 |
+| Koin | 依赖注入 |
+| Retrofit 2.9+ | 网络请求 |
+| OkHttp 4.11+ | HTTP客户端 |
+| AndroidX | Android基础库 |
+| Material Design | UI组件 |
+
+---
+
+## 🔐 安全特性
+
+### 1. 请求签名（HMAC-SHA256）
+
+```kotlin
+val config = PaymentConfig.Builder()
+    .setSecurityConfig(
+        SecurityConfig(
+            enableSignature = true,
+            signingSecret = "your_secret_key"
+        )
+    )
+    .build()
+```
+
+自动添加签名头：
+- `X-Signature`: HMAC-SHA256签名
+- `X-Timestamp`: 时间戳（毫秒）
+- `X-Nonce`: 随机数（16字节）
+
+### 2. 响应验签
+
+```kotlin
+SecurityConfig(
+    enableResponseVerification = true,
+    maxServerClockSkewMs = 300000  // 允许5分钟时间偏差
+)
+```
+
+### 3. 证书绑定（Certificate Pinning）
+
+```kotlin
+SecurityConfig(
+    enableCertificatePinning = true,
+    certificatePins = mapOf(
+        "api.example.com" to listOf(
+            "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+        )
+    )
+)
+```
+
+---
+
+## 🎯 错误处理
+
+### 标准化错误码
+
+SDK提供40+标准错误码，分6大类：
+
+| 错误码范围 | 分类 | 说明 |
+|-----------|------|------|
+| 1xxx | 客户端错误 | 参数错误、状态异常 |
+| 2xxx | 网络错误 | 请求失败、超时、解析错误 |
+| 3xxx | 查询错误 | 查询超时、失败 |
+| 4xxx | 安全错误 | 签名验证、证书验证失败 |
+| 5xxx | 渠道错误 | 渠道不存在、APP未安装 |
+| 6xxx | 系统错误 | 未知错误、流程中断 |
+
+### 智能错误处理
+
+SDK自动处理以下场景：
+
+```kotlin
+// 1. 自动参数校验
+validateOrderInput(orderId, amount)
+→ ORDER_ID_EMPTY (1002) / ORDER_AMOUNT_INVALID (1003)
+
+// 2. 智能异常映射
+SocketTimeoutException → NETWORK_TIMEOUT (2002)
+UnknownHostException → NETWORK_ERROR (2001)
+SSLException → CERTIFICATE_VERIFY_FAILED (4004)
+
+// 3. 详细错误信息
+PaymentResult.Failed(
+    errorMessage = "网络请求超时: Read timed out",
+    errorCode = "2002"
+)
+```
+
+### 错误处理示例
+
+```kotlin
+when (result) {
+    is PaymentResult.Failed -> {
+        // 获取错误信息
+        val errorCode = result.errorCode
+        val errorMessage = result.errorMessage
+        
+        // 判断是否可重试
+        if (result.isRetryable) {
+            showRetryDialog(errorMessage)
+        } else {
+            showError(errorMessage)
+        }
+        
+        // 根据错误码分类处理
+        when (result.errorCodeEnum) {
+            PaymentErrorCode.NETWORK_TIMEOUT,
+            PaymentErrorCode.NETWORK_ERROR -> {
+                // 网络问题，建议重试
+            }
+            PaymentErrorCode.APP_NOT_INSTALLED -> {
+                // 引导用户安装APP
+                showInstallAppDialog()
+            }
+            else -> {
+                // 其他错误
+            }
+        }
+    }
+}
+```
+
+---
+
+## 🔧 高级配置
+
+### 完整配置示例
+
+```kotlin
+val config = PaymentConfig.Builder()
+    // 基础配置
+    .setAppId("your_app_id")
+    .setBusinessLine("retail")
+    .setApiBaseUrl("https://api.example.com")
+    .setDebugMode(BuildConfig.DEBUG)
+    
+    // 网络配置
+    .setNetworkTimeout(30)  // 秒
+    
+    // 查询配置
+    .setInitialQueryDelay(3000)  // 调起支付后延迟3秒查询
+    .setMaxQueryRetries(3)       // 最多重试3次
+    .setQueryIntervalMs(2000)    // 每次重试间隔2秒
+    .setQueryTimeoutMs(10000)    // 总超时时间10秒
+    
+    // 订单锁配置
+    .setOrderLockTimeoutMs(300000)  // 订单锁5分钟后自动释放
+    
+    // 安全配置
+    .setSecurityConfig(
+        SecurityConfig(
+            enableSignature = true,
+            signingSecret = "your_secret_key",
+            enableResponseVerification = true,
+            enableCertificatePinning = true,
+            certificatePins = mapOf(
+                "api.example.com" to listOf("sha256/AAAA...")
+            )
+        )
+    )
+    .build()
+```
+
+---
+
+## 🔌 自定义支付渠道
+
+实现`IPaymentChannel`接口创建自定义渠道：
+
+```kotlin
+class MyCustomChannel : IPaymentChannel {
     override val channelId = "custom_pay"
     override val channelName = "自定义支付"
     override val channelIcon = R.drawable.ic_custom
-    override val requiresApp = true
-    override val packageName = "com.custom.pay"
-    override val priority = 50  // 优先级(可选)
+    override val priority = 50
+    override val requiresApp = false
     
     override fun pay(
         context: Context,
@@ -261,86 +428,81 @@ class CustomPayChannel : IPaymentChannel {
         amount: BigDecimal,
         extraParams: Map<String, Any>
     ): PaymentResult {
-        // 调起第三方APP
-        // SDK会自动监听用户返回并查询结果
-        return PaymentResult.Success(orderId)
+        // 实现支付逻辑
+        return try {
+            // 调起支付...
+            PaymentResult.Success("TX_123")
+        } catch (e: Exception) {
+            PaymentResult.Failed("支付失败: ${e.message}", "5005")
+        }
     }
     
-    override fun isAppInstalled(context: Context): Boolean {
-        return AppInstallChecker.isPackageInstalled(context, packageName)
-    }
+    override fun isAppInstalled(context: Context): Boolean = true
 }
+
+// 注册渠道
+PaymentSDK.registerChannel(MyCustomChannel())
 ```
 
-**📖 详细示例**：查看[渠道实现指南](./paycore/docs/CHANNEL_IMPLEMENTATION_GUIDE.md)，包含：
-- 微信支付完整实现(含回调Activity)
-- 支付宝支付完整实现(含线程处理)
-- 银联支付完整实现
-- H5网页支付实现
-- 最佳实践和测试建议
-
-## 🔒 安全性
-
-- ✅ 订单级锁防止重复支付,超时自动释放(默认5分钟)
-- ✅ ConcurrentHashMap + ReentrantLock保证线程安全
-- ✅ 自动释放资源防止泄漏
-- ✅ 完整的异常处理(含后端响应解析失败直接返回错误)
-- ✅ 支付流程被系统回收时兜底回调失败,避免回调悬挂
-- ✅ 查询去重机制,同一订单并发查询共享结果
-- ✅ 可选请求签名/响应验签(HMAC-SHA256 + 时间戳/随机数)防篡改与重放
-- ✅ 可选 HTTPS 证书绑定(Certificate Pinning)防中间人攻击
-
-## ⚡ 性能优化
-
-- ✅ Kotlin协程统一处理异步操作
-- ✅ 查询去重避免重复网络请求
-- ✅ 自动管理协程作用域,避免内存泄漏
-- ✅ v2.0删除200行冗余代码,架构更清晰
-- ✅ 基于Retrofit + OkHttp的高效网络层
-
-## 🏗️ 技术栈
-
-- **语言**: Kotlin 2.0.21
-- **最低支持**: Android API 24 (Android 7.0)
-- **编译版本**: Android API 36
-- **协程**: Kotlinx Coroutines 1.10.2
-- **网络**: Retrofit 3.0.0 + OkHttp 5.3.2
-- **UI**: Material Design + AndroidX
-- **JSON**: org.json (Android内置)
-- **安全**: HMAC-SHA256 + Certificate Pinning
-
-## 📝 License
-
-```
-MIT License
-
-Copyright (c) 2025 baiguichun
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## 💬 联系我们
-
-- 📧 Email: support@example.com
-- 🐛 Issues: [GitHub Issues](https://github.com/xiaobai/paymentcore/issues)
-- 📖 Wiki: [GitHub Wiki](https://github.com/xiaobai/paymentcore/wiki)
+详见 [渠道实现指南](docs/CHANNEL_IMPLEMENTATION_GUIDE.md)
 
 ---
 
-**如果觉得有用，请给个 ⭐️Star！**
+## 📚 文档
+
+- [项目结构说明](docs/PROJECT_STRUCTURE.md) - 模块划分和依赖关系
+- [架构设计文档](docs/ARCHITECTURE.md) - Clean Architecture详解
+- [API参考文档](docs/API.md) - 完整的API文档
+- [集成指南](docs/INTEGRATION_GUIDE.md) - 详细集成步骤
+- [错误码指南](docs/ERROR_CODE_GUIDE.md) - 标准错误码说明
+- [渠道实现指南](docs/CHANNEL_IMPLEMENTATION_GUIDE.md) - 自定义渠道开发
+
+---
+
+## 🤝 贡献
+
+欢迎提交Issue和Pull Request！
+
+---
+
+## 📄 许可证
+
+MIT License
+
+---
+
+## 📞 联系方式
+
+- **作者**: guichunbai
+- **版本**: v3.0.0
+- **更新日期**: 2025-11-24
+
+---
+
+## 🎉 更新日志
+
+### v3.0.0 (2025-11-24)
+- ✨ **重大重构**: 采用Clean Architecture架构
+- ✨ **模块化设计**: 拆分为6个独立模块
+- ✨ **依赖注入**: 引入Koin管理依赖
+- ✨ **Repository模式**: 抽象数据访问层
+- ✨ **UseCase封装**: 业务逻辑清晰化
+- ✨ **错误映射集中化**: PaymentErrorMapper统一管理
+- 🚀 **可测试性提升**: 易于Mock和单元测试
+- 🚀 **可维护性提升**: 职责清晰，模块独立
+
+### v2.0.3 (2025-11-23)
+- ✨ 标准化错误码（40+个）
+- ✨ 智能异常映射
+- ✨ 自动参数校验
+- 📚 完善文档和示例
+
+### v2.0.0 (2025-11-22)
+- ✨ 支持任何Activity（移除FragmentActivity依赖）
+- ✨ 自动化支付流程
+- ✨ 透明Activity生命周期监听
+- 🔒 增强安全特性（签名、证书绑定）
+
+---
+
+**Happy Coding! 🚀**

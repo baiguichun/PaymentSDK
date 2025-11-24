@@ -21,4 +21,9 @@ dependencyResolutionManagement {
 
 rootProject.name = "paymentcore"
 include(":app")
-include(":paycore")
+include(":core")
+include(":channel-spi")
+include(":network-security")
+include(":domain")
+include(":data")
+include(":ui-kit")
