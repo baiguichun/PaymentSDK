@@ -67,7 +67,7 @@ interface IPaymentChannel {
 
 **设计说明：**
 - `pay()` 是普通函数，不是suspend函数，因为大多数支付只是调起第三方APP
-- 实际支付结果由 `PaymentLifecycleActivity` 自动查询后端获取
+- 实际支付结果由进程级生命周期监听自动查询后端获取
 - 统一的接口简化了调用逻辑
 
 **优势：**
@@ -108,23 +108,19 @@ fun filterChannels(
 - 自动检测APP安装状态，提升用户体验
 - 支持渠道优先级排序
 
-### 4. 透明Activity生命周期监听
+### 4. 进程级生命周期监听
 
-使用透明`PaymentLifecycleActivity`自动监听用户从第三方APP返回：
+基于 `ProcessLifecycleOwner` 的 `PaymentProcessLifecycleObserver` 自动监听前后台切换，无需透明 Activity。
 
 **工作流程：**
 ```
 用户调起支付
     ↓
-启动透明Activity（用户无感知）
-    ↓
 调起第三方APP（微信/支付宝）
     ↓
-onPause（用户跳转到第三方APP）
+应用切到后台（ProcessLifecycleOwner onStop）
     ↓
-【用户完成支付】
-    ↓
-onResume（检测到用户返回）
+用户返回前台（onStart）或兜底定时器到期
     ↓
 自动延迟查询支付结果
     ↓
@@ -133,29 +129,14 @@ onResume（检测到用户返回）
 
 **关键实现：**
 ```kotlin
-class PaymentLifecycleActivity : Activity() {
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var hasLeftApp = false
-    
-    override fun onPause() {
-        super.onPause()
-        if (!isFinishing) {
-            hasLeftApp = true  // 标记用户已离开
-        }
-    }
-    
-    override fun onResume() {
-        super.onResume()
-        if (hasLeftApp) {
-            // 检测到用户返回，开始查询
-            queryPaymentResult()
-        }
-    }
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        activityScope.cancel()  // 自动取消所有协程
-    }
+PaymentProcessLifecycleObserver.start(
+    context = context,
+    orderId = orderId,
+    channelId = channelId,
+    amount = amount,
+    extraParams = extraParams
+) { result ->
+    // 统一回调支付结果
 }
 ```
 
@@ -321,27 +302,8 @@ object AppInstallChecker {
 
 使用 Kotlin 协程处理所有异步任务：
 
-```kotlin
-// PaymentLifecycleActivity - 自动管理协程生命周期
-class PaymentLifecycleActivity : Activity() {
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        activityScope.cancel()  // 自动取消所有协程
-    }
-}
-
-// PaymentSheetDialog - 协程自动管理
-class PaymentSheetDialog {
-    private val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-}
-
-// 网络请求 - Dispatchers.IO
-suspend fun queryOrderStatus() = withContext(Dispatchers.IO) {
-    // 在 IO 调度器执行
-}
-```
+- `PaymentProcessLifecycleObserver` / `PaymentSheetDialog` 使用独立 `SupervisorJob` + `Dispatchers.Main`，流程结束时统一取消
+- 网络请求通过 `withContext(Dispatchers.IO)` 在 IO 线程执行
 
 **优势：**
 - ✅ 轻量级（每个协程仅几KB）
@@ -381,7 +343,7 @@ suspend fun queryOrderStatus() = withContext(Dispatchers.IO) {
 └────────────────┬────────────────────────────────────────┘
                  ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 5. 启动PaymentLifecycleActivity（透明）                  │
+│ 5. 启动支付流程（进程生命周期监听）                      │
 │    - 检查订单锁（PaymentLockManager）                    │
 │    - 加锁防止重复支付                                     │
 └────────────────┬────────────────────────────────────────┘
@@ -390,7 +352,7 @@ suspend fun queryOrderStatus() = withContext(Dispatchers.IO) {
 │ 6. 执行支付                                              │
 │    - 调用 channel.pay()                                 │
 │    - 调起第三方支付APP                                    │
-│    - onPause: Activity进入后台                           │
+│    - ProcessLifecycleOwner onStop: 应用进入后台           │
 └────────────────┬────────────────────────────────────────┘
                  ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -399,8 +361,8 @@ suspend fun queryOrderStatus() = withContext(Dispatchers.IO) {
                  ▼
 ┌─────────────────────────────────────────────────────────┐
 │ 8. 用户返回APP                                           │
-│    - onResume: 检测到用户返回                            │
-│    - delay(200ms)后开始查询                              │
+│    - ProcessLifecycleOwner onStart: 检测到返回            │
+│    - delay(200ms) 或兜底定时后开始查询                    │
 └────────────────┬────────────────────────────────────────┘
                  ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -413,7 +375,6 @@ suspend fun queryOrderStatus() = withContext(Dispatchers.IO) {
 ┌─────────────────────────────────────────────────────────┐
 │ 10. 返回最终结果                                         │
 │    - 释放订单锁                                          │
-│    - 关闭透明Activity                                    │
 │    - 回调 onPaymentResult                               │
 └────────────────┬────────────────────────────────────────┘
                  ▼

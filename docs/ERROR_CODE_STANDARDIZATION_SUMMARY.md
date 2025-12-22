@@ -194,9 +194,9 @@ SSLException → CERTIFICATE_VERIFY_FAILED (4004)
 
 ---
 
-### 3. 更新PaymentLifecycleActivity
+### 3. 更新 PaymentProcessLifecycleObserver
 
-**文件**: `paycore/src/main/java/com/xiaobai/paycore/ui/PaymentLifecycleActivity.kt`
+**文件**: `ui-kit/src/main/java/com/xiaobai/paycore/PaymentProcessLifecycleObserver.kt`
 
 #### 更新点
 
@@ -543,4 +543,3 @@ buildFailure(PaymentErrorCode.CHANNEL_NOT_FOUND, channelId)
 | 可监控性 | 5/10 | 8/10 | ✅ 9/10 |
 
 错误码标准化 + 智能化是走向生产环境的关键一步！🎉
-

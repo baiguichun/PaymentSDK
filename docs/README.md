@@ -5,9 +5,10 @@
 ## ✨ 核心特性
 
 ### 🎯 智能生命周期管理
-✅ **透明Activity监听** - 自动检测用户从第三方APP返回  
+✅ **进程级生命周期监听** - 基于 `ProcessLifecycleOwner` 自动检测前后台切换  
 ✅ **自动查询结果** - 返回后自动查询后端支付状态  
-✅ **一键集成** - `showPaymentSheet()` 自动完成整个支付流程
+✅ **一键集成** - `showPaymentSheet()` 自动完成整个支付流程  
+✅ **启动恢复** - 宿主可在应用启动时查询后端未完成订单，调用 `resumePendingPayment()` 继续流程
 
 ### 🏗️ 现代化架构
 ✅ **模块化设计** - 支付渠道作为独立SDK，按需集成  
@@ -46,7 +47,7 @@ paymentcore/
 │   └── PaymentLockManager.kt       # 支付锁管理（订单锁+查询去重）
 └── ui/
     ├── PaymentSheetDialog.kt       # 支付选择对话框（回调返回结果）
-    ├── PaymentLifecycleActivity.kt # 透明生命周期Activity
+    ├── PaymentProcessLifecycleObserver.kt # 基于进程生命周期的监听器
     └── PaymentChannelAdapter.kt    # 渠道列表适配器
 ```
 
@@ -59,21 +60,15 @@ showPaymentSheet() 显示渠道选择
     ↓
 用户选择支付渠道
     ↓
-启动 PaymentLifecycleActivity（透明）
+调用 `showPaymentSheet()` 或 `payWithChannel()` / `resumePendingPayment()`
     ↓
 调起第三方支付APP（微信/支付宝）
     ↓
-onPause - 用户跳转到支付APP
+ProcessLifecycleOwner 监听前后台切换（离开前台 → 返回前台）
     ↓
-【用户完成支付】
+自动查询后端支付结果（含兜底轮询）
     ↓
-onResume - 检测到用户返回
-    ↓
-自动查询后端支付结果
-    ↓
-返回最终PaymentResult
-    ↓
-关闭透明Activity
+返回最终 PaymentResult
 ```
 
 ## 🚀 快速开始
@@ -213,6 +208,36 @@ class CheckoutActivity : AppCompatActivity() {
 }
 ```
 
+#### 方式3：应用启动时恢复未完成订单
+
+```kotlin
+class MyApplication : Application() {
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    override fun onCreate() {
+        super.onCreate()
+        // 初始化 & 渠道注册略
+        // 向后端查询是否有未完成的订单
+        appScope.launch {
+            val pending = queryPendingOrdersFromBackend() // 自行实现
+            pending.forEach { pendingOrder ->
+                PaymentSDK.resumePendingPayment(
+                    context = this@MyApplication,
+                    orderId = pendingOrder.orderId,
+                    channelId = pendingOrder.channelId,
+                    amount = pendingOrder.amount,
+                    extraParams = pendingOrder.extraParams,
+                    onResult = { result ->
+                        // 处理结果：如必要可发本地通知或持久化
+                        handlePendingResult(pendingOrder.orderId, result)
+                    }
+                )
+            }
+        }
+    }
+}
+```
+
 ## 📦 核心组件说明
 
 ### PaymentSDK
@@ -223,17 +248,17 @@ SDK入口类，提供初始化、渠道注册和支付流程。
 - `registerChannel()` - 注册支付渠道
 - `showPaymentSheet()` - 显示支付选择弹窗
 - `payWithChannel()` - 指定渠道支付
+- `resumePendingPayment()` - 宿主在启动时拿到“未完成订单”后恢复支付流程
 - `queryOrderStatus()` - 手动查询订单状态
 
-### PaymentLifecycleActivity
-透明Activity，监听支付生命周期。
+### PaymentProcessLifecycleObserver
+基于 `ProcessLifecycleOwner` 的监听器，自动在前后台切换后发起查询。
 
 **功能：**
-- ✅ 监听用户从第三方APP返回
-- ✅ 自动查询支付结果
+- ✅ 监听用户从第三方APP返回前台
+- ✅ 自动查询支付结果，含兜底定时触发
 - ✅ 对用户完全透明
-- ✅ 支持多个支付同时进行
-- ✅ Activity 异常销毁时兜底回调失败，避免回调悬挂
+- ✅ 订单级锁，防止重复支付/回调悬挂
 
 ### IPaymentChannel
 支付渠道接口，所有支付渠道SDK需实现。
@@ -343,7 +368,7 @@ class CustomPayChannel : IPaymentChannel {
 - 订单锁：`PaymentLockManager.tryLockOrder()` 阻止同一订单重复支付，超时时间由 `orderLockTimeoutMs` 控制（默认5分钟）并自动释放
 - 查询去重：同一订单的查询通过 `activeQueries` 共享结果，避免重复网络请求
 - 渠道过滤：仅展示“已注册 + 已安装”的渠道（或不需要APP的渠道），减少无效调起
-- 生命周期安全：透明 `PaymentLifecycleActivity` 在 `onDestroy` 时会取消查询协程，避免泄漏
+- 生命周期安全：基于进程生命周期监听，查询协程随流程结束自动取消，避免泄漏
 
 > 当前未内置支付队列或专用后台执行器，支付与查询运行在调用方提供的协程/线程环境中。
 

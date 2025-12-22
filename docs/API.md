@@ -237,8 +237,8 @@ fun showPaymentSheet(
 1. 从后端获取可用支付渠道
 2. 显示半屏弹窗供用户选择
 3. 用户选择渠道后自动调起支付
-4. 启动透明Activity监听生命周期
-5. 用户从第三方APP返回后自动查询结果
+4. 基于进程生命周期监听前后台切换
+5. 用户从第三方APP返回后自动查询结果（含兜底定时）
 6. 最终结果通过 UI 层 ViewModel 状态分发（订阅状态处理）
 
 **示例：**
@@ -260,8 +260,8 @@ PaymentSDK.showPaymentSheet(
 **SDK会自动：**
 1. 为订单加锁，阻止同一订单重复支付（锁会在 `orderLockTimeoutMs` 后自动释放，默认5分钟）
 2. 校验渠道是否已注册且可用（需要APP时会检查安装状态）
-3. 启动透明Activity(`PaymentLifecycleActivity`)监听用户从第三方APP返回
-4. 返回后固定延迟200ms,然后按 `maxQueryRetries` / `queryIntervalMs` / `queryTimeoutMs` 查询后端并返回最终 `PaymentResult`
+3. 基于 `ProcessLifecycleOwner` 监听前后台切换（无需额外Activity）
+4. 返回前台后固定延迟200ms（带兜底定时器），按 `maxQueryRetries` / `queryIntervalMs` / `queryTimeoutMs` 查询后端并返回最终 `PaymentResult`
 5. 查询同一订单时自动去重,避免重复网络请求
 6. 支付完成后自动释放订单锁
 
@@ -311,6 +311,25 @@ PaymentSDK.payWithChannel(
 ```
 
 > 同一订单的并发调用会被订单锁拦截并直接回调 `PaymentResult.Failed`。
+
+---
+
+#### resumePendingPayment() 🆕
+
+应用启动后，如果业务侧先从后端拿到“未完成的支付订单”（例如上次被系统回收），可调用该方法继续支付流程。内部沿用 `payWithChannel` 的校验、锁和生命周期监听，防止重复支付。
+
+```kotlin
+PaymentSDK.resumePendingPayment(
+    context = appContext,
+    orderId = pending.orderId,
+    channelId = pending.channelId,
+    amount = pending.amount,
+    extraParams = pending.extraParams,
+    onResult = { result ->
+        // 根据业务需要处理：如通知、落库、刷新首页角标等
+    }
+)
+```
 
 ---
 
@@ -586,12 +605,12 @@ fun pay(
 - `PaymentResult`: 支付结果
   - 对于第三方APP支付（微信/支付宝），返回 `Success` 表示成功调起支付APP
   - 对于网络支付，返回实际支付结果
-  - SDK会通过 `PaymentLifecycleActivity` 自动查询实际结果
+  - SDK会通过进程级生命周期监听自动查询实际结果
 
 **说明：**
 - ✅ v2.0: 改为普通函数（非suspend）
 - 调起第三方APP后立即返回
-- 实际支付结果由 `PaymentLifecycleActivity` 监听用户返回并查询
+- 实际支付结果由进程生命周期监听器（`ProcessLifecycleOwner`）触发查询
 
 **实现示例：**
 ```kotlin
@@ -1353,7 +1372,7 @@ class UnionPayChannel : IPaymentChannel {
 - **SDK不向外抛异常**: 所有错误通过 `PaymentResult.Failed` 返回（包含网络/解析/业务错误）
 - **错误信息**: `errorMessage` 包含具体原因；`errorCode` 可选,由渠道或后端定义
 - **查询超时**: 返回 `PaymentResult.Processing`,建议提示用户稍后在订单列表中查看
-- **透明Activity兜底**: 若被系统回收且未能正常结束,会兜底回调 `PaymentResult.Failed("支付流程已中断，请重试")` 并清理回调,避免悬挂
+- **生命周期兜底**: 基于进程生命周期监听，流程中断时会回调失败，避免回调悬挂
 - **响应解析失败**: 渠道列表/订单状态等接口响应解析失败会直接返回 `Result.failure`,调用方可据此提示用户或重试
 
 ---
@@ -1375,8 +1394,8 @@ class UnionPayChannel : IPaymentChannel {
 
 ### UI回调
 
-- **主线程回调**: 支付结果由透明Activity在主线程回调,便于直接更新UI
-- **协程作用域**: `PaymentLifecycleActivity` 使用独立协程作用域,`onDestroy` 时自动取消
+- **主线程回调**: 支付结果由进程生命周期监听器在主线程回调,便于直接更新UI
+- **协程作用域**: 生命周期监听协程在流程结束时自动取消
 
 ### 最佳实践
 

@@ -216,7 +216,7 @@ object PaymentSDK {
 ```kotlin
 // 场景：自动查询 + 手动查询同时发生
 
-// 协程1：自动查询（PaymentLifecycleActivity）
+// 协程1：自动查询（前后台监听触发）
 lifecycleScope.launch {
     val result = PaymentSDK.queryOrderStatus("ORDER_001")
 }
@@ -254,13 +254,20 @@ repeat(10) {
 #### 实际应用
 
 ```kotlin
-// PaymentLifecycleActivity - 监听生命周期
-class PaymentLifecycleActivity : Activity() {
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+// PaymentProcessLifecycleObserver - 监听前后台切换
+object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     
-    override fun onDestroy() {
-        super.onDestroy()
-        activityScope.cancel()  // ✅ 自动取消所有协程
+    override fun onStart(owner: LifecycleOwner) {
+        // 前台时启动查询等协程
+    }
+    
+    override fun onStop(owner: LifecycleOwner) {
+        // 记录离开前台状态
+    }
+    
+    fun cleanup() {
+        scope.cancel()  // ✅ 自动取消所有协程
     }
 }
 

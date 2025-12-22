@@ -156,7 +156,7 @@ object PaymentSDK {
             return
         }
         
-        com.xiaobai.paycore.ui.PaymentLifecycleActivity.start(
+        PaymentProcessLifecycleObserver.start(
             context = context,
             orderId = orderId,
             channelId = channelId,
@@ -166,6 +166,28 @@ object PaymentSDK {
                 PaymentLockManager.unlockOrder(orderId)
                 onResult(result)
             }
+        )
+    }
+    
+    /**
+     * 用于宿主在应用启动时从后端拿到“未完成订单”后主动恢复支付流程。
+     */
+    fun resumePendingPayment(
+        context: Context,
+        orderId: String,
+        channelId: String,
+        amount: BigDecimal,
+        extraParams: Map<String, Any> = emptyMap(),
+        onResult: (PaymentResult) -> Unit
+    ) {
+        // 直接复用 payWithChannel 的校验和锁逻辑，避免重复支付
+        payWithChannel(
+            channelId = channelId,
+            context = context,
+            orderId = orderId,
+            amount = amount,
+            extraParams = extraParams,
+            onResult = onResult
         )
     }
     

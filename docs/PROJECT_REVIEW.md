@@ -322,7 +322,7 @@ val failure = errorMapper.mapExceptionToFailed(e, PaymentErrorCode.QUERY_FAILED)
    - 隐藏内部复杂性
 
 6. **Observer模式** ✅
-   - PaymentLifecycleActivity监听生命周期
+   - PaymentProcessLifecycleObserver 监听进程生命周期
 
 7. **Singleton模式** ✅
    - PaymentSDK使用object

@@ -72,7 +72,7 @@ PaymentSDK/
 │           ├── PaymentSheetDialog.kt # 支付渠道选择对话框
 │           ├── PaymentSheetViewModel.kt # Dialog的ViewModel
 │           ├── PaymentChannelAdapter.kt # 渠道列表适配器
-│           └── PaymentLifecycleActivity.kt # 透明Activity（生命周期监听）
+│           └── PaymentProcessLifecycleObserver.kt # 进程级生命周期监听
 │
 └── app/                         # 📱 示例/演示应用
     └── src/main/
@@ -233,7 +233,7 @@ implementation("com.squareup.okhttp3:okhttp:4.11.0")
   - `getAvailableChannels()`: 获取可用渠道列表
 - `PaymentSheetDialog`: 半屏弹窗（支持任何Activity）
 - `PaymentSheetViewModel`: Dialog的ViewModel（管理状态和数据）
-- `PaymentLifecycleActivity`: 透明Activity（自动监听生命周期）
+- `PaymentProcessLifecycleObserver`: 基于进程生命周期的监听器
 - `PaymentChannelAdapter`: 渠道列表适配器
 
 **特点**:

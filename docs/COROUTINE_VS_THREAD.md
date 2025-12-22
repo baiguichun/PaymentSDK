@@ -136,35 +136,24 @@ suspend fun queryOrderStatus(orderId: String): PaymentResult {
 
 ## 🏗️ SDK 中的协程应用
 
-### 1. PaymentLifecycleActivity
+### 1. PaymentProcessLifecycleObserver
 
 ```kotlin
-class PaymentLifecycleActivity : Activity() {
-    // ✅ 创建协程作用域
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     
-    private fun onUserReturnedFromPayment() {
-        // ✅ 在作用域内启动协程
-        activityScope.launch {
-            // 延迟（不阻塞线程）
+    override fun onStart(owner: LifecycleOwner) {
+        scope.launch {
             delay(200)
-            
-            // 网络请求（自动切换到 IO 线程）
             val result = withContext(Dispatchers.IO) {
                 PaymentSDK.queryOrderStatus(orderId)
             }
-            
-            // 返回主线程更新UI
-            withContext(Dispatchers.Main) {
-                deliverResult(result)
-            }
+            deliverResult(result) // 主线程
         }
     }
     
-    override fun onDestroy() {
-        super.onDestroy()
-        // ✅ 自动取消所有协程（防止泄漏）
-        activityScope.cancel()
+    fun cleanup() {
+        scope.cancel() // ✅ 自动取消所有协程（防止泄漏）
     }
 }
 ```

@@ -35,6 +35,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation(libs.material)
 

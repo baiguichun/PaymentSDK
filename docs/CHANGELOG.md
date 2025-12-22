@@ -6,7 +6,7 @@
 
 - 渠道列表解析失败不再被吞掉，网络层会返回 `Result.failure`，UI 能正确展示错误而不是误判为“无可用渠道”。
 - 创单响应解析异常会直接失败，避免返回空参数导致后续支付环节静默失败。
-- 透明支付 Activity 被系统回收时，兜底清理 `pendingCallbacks` 并回调失败，防止回调悬挂和结果丢失。
+- 替换透明 Activity 为进程级生命周期监听，避免 Activity 被系统回收导致回调悬挂。
 
 ## v2.0.3 - 2025-11-23
 
@@ -65,13 +65,13 @@ delay(timeoutMs)  // 等待超时
 **原因：**
 1. **完全未被使用** - 唯一使用它的 `executePaymentWithQueue` 方法是废代码
 2. **Kotlin 协程更好** - 现代 Android 开发的标准做法
-3. **架构已变化** - `PaymentLifecycleActivity` 和 `PaymentSheetDialog` 都使用协程
+3. **架构已变化** - 进程级生命周期监听器和 `PaymentSheetDialog` 都使用协程
 4. **降低复杂度** - 减少维护成本
 
 **现在使用：**
 ```kotlin
-// ✅ PaymentLifecycleActivity
-private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+// ✅ PaymentProcessLifecycleObserver
+private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
 // ✅ PaymentSheetDialog
 private val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -125,7 +125,7 @@ suspend fun queryOrderStatus(...) = withContext(Dispatchers.IO) { ... }
 修复了自动查询和手动查询可能发生冲突的问题。
 
 **问题：**
-- `PaymentLifecycleActivity` 的自动查询正在轮询
+- 进程级自动查询正在轮询
 - 用户同时调用 `queryOrderStatus()` 手动查询
 - 导致同一订单被重复查询，浪费资源
 
@@ -174,19 +174,19 @@ private suspend fun queryPaymentResultWithRetry(orderId: String): PaymentResult 
 
 ### ✨ 核心新特性
 
-#### 1. **透明Activity生命周期监听**
+#### 1. **进程级生命周期监听**
 
-新增 `PaymentLifecycleActivity` 透明Activity，自动监听用户从第三方支付APP返回。
+新增 `PaymentProcessLifecycleObserver`，基于 `ProcessLifecycleOwner` 自动监听用户从第三方支付APP返回。
 
 **解决的问题：**
 - ✅ 用户从微信/支付宝返回后自动查询支付结果
 - ✅ 支持有UI和无UI的场景
-- ✅ 不依赖外部Fragment或Activity生命周期
+- ✅ 避免透明 Activity 被系统回收导致回调悬挂
 
 **工作流程：**
 ```
-用户选择支付 → 启动透明Activity → 跳转第三方APP 
-→ 用户完成支付返回 → 自动查询结果 → 返回最终状态
+用户选择支付 → 调起第三方APP
+→ 前后台切换/兜底定时 → 自动查询结果 → 返回最终状态
 ```
 
 #### 2. **支付弹窗自动执行支付**
@@ -324,22 +324,7 @@ fun getPaymentStatus(): String
 
 #### 2. **修复内存泄漏**
 
-`PaymentLifecycleActivity` 的静态回调改用 `ConcurrentHashMap` 管理。
-
-**之前：**
-```kotlin
-companion object {
-    private var resultCallback: ((PaymentResult) -> Unit)? = null  // ❌ 单例
-}
-```
-
-**现在：**
-```kotlin
-companion object {
-    private val pendingCallbacks = 
-        ConcurrentHashMap<String, CallbackData>()  // ✅ 按orderId管理
-}
-```
+`PaymentProcessLifecycleObserver` 使用单次会话状态并在流程结束时清理回调，避免静态回调导致的潜在泄漏。
 
 #### 3. **SDK初始化检查**
 
@@ -357,11 +342,11 @@ private fun checkInitialized() {
 
 ### 📱 新增组件
 
-#### PaymentLifecycleActivity
-透明Activity，监听支付生命周期。
+#### PaymentProcessLifecycleObserver
+基于进程生命周期的监听器，自动处理支付前后台切换。
 
 **特性：**
-- 完全透明，用户无感知
+- 无需透明 Activity，降低被系统回收风险
 - 自动检测用户返回
 - 自动查询支付结果
 
@@ -517,8 +502,7 @@ val config = PaymentConfig.Builder()
 
 ### 🐛 Bug修复
 
-- ✅ 修复 PaymentLifecycleActivity 静态变量内存泄漏
-- ✅ 修复多个支付同时进行时回调被覆盖的问题
+- ✅ 修复进程级监听流程的回调清理，避免回调被覆盖
 - ✅ 修复 Dialog 协程作用域未正确取消的问题
 - ✅ 修复 SDK 未初始化时的错误提示不明确
 
@@ -538,7 +522,7 @@ PaymentSDK → PaymentTaskQueue → PaymentLockManager
 
 **现在的架构（v2.0）：**
 ```
-PaymentSDK → PaymentLockManager → PaymentLifecycleActivity
+PaymentSDK → PaymentLockManager → PaymentProcessLifecycleObserver
          ↓
     Kotlin Coroutines (协程)
 ```

@@ -48,22 +48,22 @@ interface IPaymentChannel {
 ```
 
 **创新设计**
-- ✅ **透明Activity生命周期监听** - 优雅解决跨APP支付问题
+- ✅ **进程级生命周期监听** - 基于 ProcessLifecycleOwner 透明处理跨APP支付
 - ✅ **订单级锁机制** - 防止重复支付
 - ✅ **查询去重机制** - 优化网络请求
 
 #### 💡 设计亮点
 
-**透明Activity方案** ✨
+**进程级监听方案** ✨
 ```kotlin
 // 用户完全无感知，自动监听支付结果
-PaymentLifecycleActivity（透明）
+ProcessLifecycleOwner（前后台切换）
     ↓
-onPause → 用户跳转到支付APP
+onStop → 用户跳转到支付APP
     ↓
-onResume → 自动查询结果
+onStart/兜底定时 → 自动查询结果
 ```
-这是非常优雅的解决方案，完美解决了Android跨APP支付的生命周期监听难题。
+基于进程生命周期的方案，避免了透明 Activity 被系统回收的风险。
 
 ---
 
@@ -297,13 +297,16 @@ data class RequestParams(
 
 **协程生命周期管理**
 ```kotlin
-// ✅ Activity级别
-class PaymentLifecycleActivity : Activity() {
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+// ✅ 进程级监听
+object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     
-    override fun onDestroy() {
-        super.onDestroy()
-        activityScope.cancel()  // ✅ 自动取消
+    override fun onStart(owner: LifecycleOwner) {
+        // 前台处理查询/结果
+    }
+    
+    fun cleanup() {
+        scope.cancel()  // ✅ 自动取消
     }
 }
 

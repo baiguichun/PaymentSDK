@@ -554,13 +554,12 @@ object PaymentSDK {
 }
 ```
 
-#### 2.6.2 PaymentLifecycleActivity (透明Activity)
+#### 2.6.2 PaymentProcessLifecycleObserver（进程级监听）
 ```kotlin
-class PaymentLifecycleActivity : Activity() {
-    // 透明Activity，监听支付生命周期
-    // onPause: 用户跳转到第三方APP
-    // onResume: 用户从第三方APP返回
-    // 自动查询支付结果并回调
+object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
+    // 基于 ProcessLifecycleOwner 监听前后台切换
+    // onStop: 用户跳转到第三方APP
+    // onStart 或兜底定时：用户返回后自动查询并回调
 }
 ```
 
@@ -597,15 +596,15 @@ class PaymentLifecycleActivity : Activity() {
     ↓
 [Backend] 返回预支付参数
     ↓
-[UI] 启动PaymentLifecycleActivity（透明）
+[UI] 启动支付流程（进程生命周期监听）
     ↓
 [Channel] IPaymentChannel.pay() → 调起第三方APP
     ↓
-[Lifecycle] onPause → 用户跳转到支付APP
+[Lifecycle] ProcessLifecycleOwner onStop → 应用进入后台
     ↓
 【用户完成支付】
     ↓
-[Lifecycle] onResume → 检测到用户返回
+[Lifecycle] ProcessLifecycleOwner onStart 或兜底定时 → 检测到用户返回
     ↓
 [Domain] QueryStatusUseCase.invoke() (自动轮询重试)
     ↓
@@ -688,7 +687,7 @@ class PaymentLifecycleActivity : Activity() {
 - `PaymentSDK`作为统一入口，隐藏内部复杂性
 
 #### 4. Observer模式
-- `PaymentLifecycleActivity`监听生命周期变化
+- `PaymentProcessLifecycleObserver` 监听进程生命周期变化
 
 #### 5. Singleton模式
 - `PaymentSDK`、`PaymentLockManager`使用object实现

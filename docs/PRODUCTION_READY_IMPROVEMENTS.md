@@ -10,7 +10,7 @@
 |-----|---------|---------|---------|
 | 同一订单重复支付 | 订单级锁机制 | `PaymentLockManager.tryLockOrder()` | ✅ 完整 |
 | 重复查询后端 | 查询去重机制 | `activeQueries: ConcurrentHashMap` | ✅ 完整 |
-| 生命周期管理 | 透明Activity监听 | `PaymentLifecycleActivity` | ✅ 完整 |
+| 生命周期管理 | 进程级生命周期监听 | `PaymentProcessLifecycleObserver` | ✅ 完整 |
 | 协程生命周期泄漏 | 自动取消机制 | `CoroutineScope + SupervisorJob` | ✅ 完整 |
 
 ---
@@ -134,20 +134,19 @@ fun payWithChannel(
         return
     }
     
-    // ✅ 步骤3：执行支付
-    try {
-        // 启动透明Activity监听生命周期
-        val intent = Intent(activity, PaymentLifecycleActivity::class.java).apply {
-            putExtra("orderId", orderId)
-            putExtra("channelId", channelId)
-            // ...
+    // ✅ 步骤3：执行支付并监听进程级生命周期
+    PaymentProcessLifecycleObserver.start(
+        context = activity,
+        orderId = orderId,
+        channelId = channelId,
+        amount = amount,
+        extraParams = extraParams,
+        onResult = { result ->
+            // ✅ 步骤4：释放锁并回调
+            PaymentLockManager.unlockOrder(orderId)
+            onResult(result)
         }
-        activity.startActivity(intent)
-    } catch (e: Exception) {
-        // ✅ 步骤4：失败时释放锁
-        PaymentLockManager.unlockOrder(orderId)
-        onResult(PaymentResult.Failed(orderId, e.message))
-    }
+    )
 }
 ```
 
@@ -283,7 +282,7 @@ object PaymentSDK {
 #### 使用示例
 
 ```kotlin
-// 协程1：自动查询（PaymentLifecycleActivity）
+// 协程1：自动查询（进程生命周期监听触发）
 lifecycleScope.launch {
     val result = PaymentSDK.queryOrderStatus("ORDER_001")
     Log.d(TAG, "自动查询结果: $result")
@@ -333,7 +332,7 @@ jobs.joinAll()
 
 ---
 
-## 3. 透明Activity生命周期监听
+## 3. 进程级生命周期监听
 
 ### ⚠️ 问题分析
 
@@ -361,77 +360,14 @@ jobs.joinAll()
 #### 实现机制
 
 ```kotlin
-// 1. 透明主题（完全不可见）
-<style name="Theme.PaymentCore.Transparent" parent="Theme.AppCompat.Light.NoActionBar">
-    <item name="android:windowIsTranslucent">true</item>
-    <item name="android:windowBackground">@android:color/transparent</item>
-    <item name="android:windowContentOverlay">@null</item>
-    <item name="android:windowNoTitle">true</item>
-    <item name="android:windowIsFloating">true</item>
-    <item name="android:backgroundDimEnabled">false</item>
-    <item name="android:windowAnimationStyle">@null</item>
-</style>
-
-// 2. 透明Activity实现
-class PaymentLifecycleActivity : Activity() {
-    // 自动管理的协程作用域
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    
-    // 标记是否已经离开过（跳转到第三方APP）
-    private var hasLeftApp = false
-    
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        
-        // ✅ 步骤1：获取支付参数
-        val orderId = intent.getStringExtra("orderId")!!
-        val channelId = intent.getStringExtra("channelId")!!
-        
-        // ✅ 步骤2：调起第三方支付APP
-        val channel = PaymentSDK.getChannelManager().getChannel(channelId)
-        channel.pay(this, orderId, amount, extraParams)
-    }
-    
-    override fun onPause() {
-        super.onPause()
-        // ✅ 步骤3：检测到用户离开（跳转到支付APP）
-        if (isFinishing.not()) {
-            hasLeftApp = true
-        }
-    }
-    
-    override fun onResume() {
-        super.onResume()
-        
-        // ✅ 步骤4：用户返回后自动查询
-        if (hasLeftApp) {
-            onUserReturnedFromPayment()
-        }
-    }
-    
-    private fun onUserReturnedFromPayment() {
-        activityScope.launch {
-            // 短暂延迟，等待第三方APP回调完成
-            delay(200)
-            
-            // ✅ 步骤5：查询后端支付状态
-            val result = PaymentSDK.queryOrderStatus(orderId)
-            
-            // ✅ 步骤6：返回结果并关闭Activity
-            PaymentResultManager.deliverResult(orderId, result)
-            
-            // 释放订单锁
-            PaymentLockManager.unlockOrder(orderId)
-            
-            finish()
-        }
-    }
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        // ✅ 步骤7：自动取消所有协程
-        activityScope.cancel()
-    }
+PaymentProcessLifecycleObserver.start(
+    context = context,
+    orderId = orderId,
+    channelId = channelId,
+    amount = amount,
+    extraParams = extraParams
+) { result ->
+    // 主线程回调最终 PaymentResult，内部已处理兜底定时查询和协程取消
 }
 ```
 
@@ -440,35 +376,26 @@ class PaymentLifecycleActivity : Activity() {
 ```
 用户点击支付
     ↓
-启动 PaymentLifecycleActivity（透明，用户看不见）
+调起第三方APP（微信/支付宝）
     ↓
-onCreate: 调起支付宝APP
+ProcessLifecycleOwner onStop: 应用进入后台
     ↓
-onPause: hasLeftApp = true（记录用户离开）
+【用户在第三方APP完成支付】
     ↓
-【用户在支付宝完成支付】
+ProcessLifecycleOwner onStart 或兜底定时器触发
     ↓
-onResume: 检测到 hasLeftApp = true
+delay(200ms) 后自动查询后端状态
     ↓
-delay(200ms)：等待第三方回调
-    ↓
-自动查询后端：queryOrderStatus()
-    ↓
-返回结果：PaymentResult.Success/Failed
-    ↓
-finish()：关闭透明Activity
-    ↓
-onDestroy: activityScope.cancel()（清理协程）
+返回结果：PaymentResult.Success/Failed/Processing/Cancelled
 ```
 
 #### 关键设计点
 
 | 设计点 | 说明 |
 |--------|------|
-| **完全透明** | 用户完全感知不到这个Activity的存在 |
-| **生命周期监听** | 利用 onPause/onResume 检测用户离开和返回 |
-| **自动查询** | 无需用户手动刷新 |
-| **协程自动取消** | onDestroy 时取消所有协程，防止泄漏 |
+| **进程级监听** | 基于 `ProcessLifecycleOwner` 监听前后台切换 |
+| **自动查询** | 无需用户手动刷新，含兜底定时触发 |
+| **协程自动取消** | 流程结束时取消查询/兜底协程，防止泄漏 |
 
 ---
 
@@ -484,25 +411,25 @@ onDestroy: activityScope.cancel()（清理协程）
 
 ### 📊 实际应用示例
 
-#### 1. Activity 协程管理
+#### 1. 进程生命周期监听协程管理
 
 ```kotlin
-class PaymentLifecycleActivity : Activity() {
-    // 创建协程作用域
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     
-    private fun onUserReturnedFromPayment() {
-        // 在作用域内启动协程
-        activityScope.launch {
-            val result = PaymentSDK.queryOrderStatus(orderId)
-            // ...
+    override fun onStart(owner: LifecycleOwner) {
+        scope.launch {
+            // 前台触发查询或处理支付回调
         }
     }
     
-    override fun onDestroy() {
-        super.onDestroy()
+    override fun onStop(owner: LifecycleOwner) {
+        // 记录离开前台状态
+    }
+    
+    fun cleanup() {
         // ✅ 自动取消所有协程
-        activityScope.cancel()
+        scope.cancel()
     }
 }
 ```
@@ -687,7 +614,7 @@ val config = PaymentConfig.Builder()
 |------|---------|
 | **订单锁** | `PaymentLockManager` - 防止重复支付 |
 | **查询去重** | `activeQueries` - 避免重复查询 |
-| **生命周期监听** | `PaymentLifecycleActivity` - 透明监听 |
+| **生命周期监听** | `PaymentProcessLifecycleObserver` - 进程级监听 |
 | **异步管理** | Kotlin 协程 + Dispatchers.IO |
 | **协程生命周期** | CoroutineScope + 自动取消 |
 
