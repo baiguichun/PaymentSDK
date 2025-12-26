@@ -372,6 +372,12 @@ class CustomPayChannel : IPaymentChannel {
 
 **详细文档：** [并发控制与线程安全](docs/CONCURRENT_CONTROL.md)、[生产环境特性说明](docs/PRODUCTION_READY_IMPROVEMENTS.md)
 
+## 📚 文档索引
+- [项目结构](docs/PROJECT_STRUCTURE.md) / [架构设计](docs/ARCHITECTURE.md) / [API 参考](docs/API.md)
+- [集成指南](docs/INTEGRATION_GUIDE.md) / [渠道实现指南](docs/CHANNEL_IMPLEMENTATION_GUIDE.md)
+- [渠道加载方案](docs/CHANNEL_LOADING.md) - KSP 生成注册表 + 懒代理
+- [渠道实例化流程](docs/CHANNEL_INSTANTIATION_FLOW.md) - 工厂闭包何时执行、懒加载触发点
+
 ## License
 
 MIT License

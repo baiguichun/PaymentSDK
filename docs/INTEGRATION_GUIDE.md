@@ -175,7 +175,7 @@ class MyApplication : Application() {
 
 - 在渠道实现类上添加 `@PaymentChannelService(channelId = "...")`。
 - 渠道模块引入 `alias(libs.plugins.ksp)` 插件并添加 `ksp(project(":channel-spi-processor"))` 依赖。
-- 处理器会在编译期生成映射文件，`PaymentSDK.init()` 时自动发现并注册懒加载渠道代理；真实渠道实例在调用 `pay()` 时才反射创建。
+- 处理器会在编译期生成注册表，`PaymentSDK.init()` 时自动发现并注册懒加载渠道代理；真实渠道实例在调用 `pay()` 时由生成的工厂直接创建。
 - 渠道列表 UI 文案/图标需使用后端返回的渠道元数据（`PaymentChannelMeta`），懒代理本身不承载展示信息。
 
 ---

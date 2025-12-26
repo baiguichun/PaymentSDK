@@ -12,13 +12,11 @@ import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.validate
 import com.google.devtools.ksp.getAllSuperTypes
-import java.io.OutputStream
 import java.nio.charset.StandardCharsets
 
 private const val ANNOTATION = "com.xiaobai.paycore.channel.PaymentChannelService"
 private const val PAYMENT_CHANNEL_INTERFACE = "com.xiaobai.paycore.channel.IPaymentChannel"
-private const val SERVICE_FILE = "META-INF/services/$PAYMENT_CHANNEL_INTERFACE"
-private const val CHANNEL_MAPPING_FILE = "META-INF/paycore/payment-channels.properties"
+private const val GENERATED_PACKAGE = "com.xiaobai.paycore.channel.generated"
 
 class PaymentChannelProcessor(
     private val codeGenerator: CodeGenerator,
@@ -74,48 +72,39 @@ class PaymentChannelProcessor(
             return deferred
         }
 
-        writeServiceFile(entries)
-        writeChannelMapping(entries)
+        writeRegistry(entries)
 
         generated = true
         return deferred
     }
 
-    private fun writeServiceFile(entries: List<ChannelEntry>) {
+    private fun writeRegistry(entries: List<ChannelEntry>) {
         val dependencies = entries.dependencies()
+        val objectName = "GeneratedPaymentChannelRegistry"
+
         codeGenerator.createNewFile(
             dependencies = dependencies,
-            packageName = "",
-            fileName = SERVICE_FILE
+            packageName = GENERATED_PACKAGE,
+            fileName = objectName,
+            extensionName = "kt"
         ).use { output ->
-            writeLines(output, entries.map { it.className })
-        }
-    }
-
-    private fun writeChannelMapping(entries: List<ChannelEntry>) {
-        val dependencies = entries.dependencies()
-        val deduped = entries
-            .groupBy { it.channelId }
-            .map { (channelId, group) ->
-                if (group.size > 1) {
-                    logger.warn("检测到重复的 channelId: $channelId，仅使用第一个声明: ${group.first().className}")
+            val content = buildString {
+                appendLine("package $GENERATED_PACKAGE")
+                appendLine()
+                appendLine("import com.xiaobai.paycore.channel.PaymentChannelFactory")
+                appendLine()
+                appendLine("object $objectName {")
+                appendLine("    @JvmField")
+                appendLine("    val factories: List<PaymentChannelFactory> = listOf(")
+                entries.forEachIndexed { index, entry ->
+                    val suffix = if (index == entries.lastIndex) "" else ","
+                    appendLine("        PaymentChannelFactory(\"${entry.channelId}\") { ${entry.className}() }$suffix")
                 }
-                channelId to group.first().className
+                appendLine("    )")
+                appendLine("}")
             }
-
-        codeGenerator.createNewFile(
-            dependencies = dependencies,
-            packageName = "",
-            fileName = CHANNEL_MAPPING_FILE
-        ).use { output ->
-            writeLines(output, deduped.map { (channelId, className) -> "$channelId=$className" })
+            output.write(content.toByteArray(StandardCharsets.UTF_8))
         }
-    }
-
-    private fun writeLines(output: OutputStream, lines: List<String>) {
-        lines.joinToString(separator = "\n", postfix = "\n")
-            .toByteArray(StandardCharsets.UTF_8)
-            .let(output::write)
     }
 
     private fun List<ChannelEntry>.dependencies(): Dependencies {

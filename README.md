@@ -33,6 +33,7 @@
 - **查询去重**: 避免重复网络请求
 - **自动重试**: 智能轮询查询支付结果
 - **异常兜底**: Activity回收自动处理
+- **懒加载渠道**: KSP 生成注册表 + LazyPaymentChannel，按需实例化渠道
 
 ### 📊 标准化错误处理
 - **40+标准错误码**: 分类清晰（1xxx-6xxx）
@@ -93,7 +94,7 @@ class MyApplication : Application() {
         PaymentSDK.init(this, config)
 
         // 渠道发现：为渠道实现添加 @PaymentChannelService 注解并开启 KSP（ksp(project(":channel-spi-processor"))）。
-        // SDK 初始化时只注册懒加载代理，真实渠道实例会在调用 pay() 时才反射创建；
+        // SDK 初始化时读取生成的注册表并注册懒加载代理；真实渠道实例在首次 pay()/isAppInstalled() 时通过生成的工厂创建。
         // 渠道名/图标请使用后端返回的渠道元数据进行展示。
     }
 }
@@ -441,7 +442,7 @@ class MyCustomChannel : IPaymentChannel {
     override fun isAppInstalled(context: Context): Boolean = true
 }
 
-// 标注注解后，KSP 会生成渠道映射，SDK 初始化时自动注册懒加载代理，真实实例在 pay() 时创建
+// 标注注解后，KSP 会生成渠道注册表；SDK 初始化时自动注册懒加载代理，真实实例在 pay() 时由生成的工厂创建
 ```
 
 详见 [渠道实现指南](docs/CHANNEL_IMPLEMENTATION_GUIDE.md)
@@ -456,6 +457,8 @@ class MyCustomChannel : IPaymentChannel {
 - [集成指南](docs/INTEGRATION_GUIDE.md) - 详细集成步骤
 - [错误码指南](docs/ERROR_CODE_GUIDE.md) - 标准错误码说明
 - [渠道实现指南](docs/CHANNEL_IMPLEMENTATION_GUIDE.md) - 自定义渠道开发
+- [渠道加载方案](docs/CHANNEL_LOADING.md) - 编译期注册表 + 懒代理
+- [实例化流程详解](docs/CHANNEL_INSTANTIATION_FLOW.md) - 闭包工厂与懒加载时机
 
 ---
 

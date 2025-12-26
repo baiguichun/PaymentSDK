@@ -37,7 +37,11 @@ PaymentSDK/
 │   └── src/main/java/com/xiaobai/paycore/channel/
 │       ├── IPaymentChannel.kt   # 支付渠道接口
 │       ├── PaymentChannelManager.kt # 渠道管理器
-│       └── PaymentChannelMeta.kt # 渠道元数据
+│       ├── PaymentChannelMeta.kt # 渠道元数据
+│       ├── PaymentChannelService.kt # 渠道注解，KSP收集入口
+│       ├── PaymentChannelServiceLoader.kt # 读取生成注册表，创建懒代理
+│       ├── PaymentChannelFactory.kt # 渠道工厂数据类
+│       └── LazyPaymentChannel.kt # 懒加载代理，按需实例化渠道
 │
 ├── domain/                      # 💼 业务领域模块（Clean Architecture核心）
 │   └── src/main/java/com/xiaobai/paycore/domain/

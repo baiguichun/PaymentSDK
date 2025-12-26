@@ -5,8 +5,7 @@ package com.xiaobai.paycore.channel
  */
 class LazyPaymentChannel(
     override val channelId: String,
-    private val className: String,
-    private val classLoader: ClassLoader
+    private val factory: () -> IPaymentChannel
 ) : IPaymentChannel {
 
     private val delegate: IPaymentChannel by lazy { instantiateDelegate() }
@@ -29,11 +28,6 @@ class LazyPaymentChannel(
         listOf(PaymentFeature.BASIC_PAY)
 
     private fun instantiateDelegate(): IPaymentChannel {
-        val clazz = Class.forName(className, true, classLoader)
-        val ctor = clazz.getDeclaredConstructor()
-        ctor.isAccessible = true
-        val instance = ctor.newInstance()
-        return instance as? IPaymentChannel
-            ?: error("类 $className 未实现 IPaymentChannel")
+        return factory.invoke()
     }
 }

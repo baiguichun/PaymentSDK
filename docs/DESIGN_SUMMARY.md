@@ -449,7 +449,7 @@ class CustomPayChannel : IPaymentChannel {
     }
 }
 
-// 步骤3：标注 @PaymentChannelService，构建时生成渠道映射，SDK 初始化后自动注册懒加载代理（真实渠道在 pay() 时创建）
+// 步骤3：标注 @PaymentChannelService，KSP 生成渠道注册表；SDK 初始化时注册懒加载代理，真实渠道在 pay() 时由工厂创建
 ```
 
 ### 2. 自定义UI

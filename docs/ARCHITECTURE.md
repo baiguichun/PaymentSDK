@@ -58,7 +58,7 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  PaymentRepositoryImpl - Repository接口实现                   │  │
 │  │  - 调用网络服务获取数据                                         │  │
-│  │  - 读取渠道映射并注册懒加载代理，管理渠道查询                   │  │
+│  │  - 读取渠道注册表并注册懒加载代理，管理渠道查询                │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  PaymentErrorMapper - 错误映射器                              │  │
@@ -85,8 +85,8 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
 │  │  Channel SPI (channel-spi)                                    │  │
 │  │  - IPaymentChannel: 渠道接口定义                              │  │
 │  │  - PaymentChannelManager: 渠道管理                            │  │
-│  │  - PaymentChannelService 注解 + KSP 处理器：生成渠道映射       │  │
-│  │  - LazyPaymentChannel: 懒加载代理，实例在 pay() 时创建         │  │
+│  │  - PaymentChannelService 注解 + KSP 处理器：生成渠道注册表      │  │
+│  │  - LazyPaymentChannel: 懒加载代理，实例在 pay() 时由工厂创建    │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Core (core)                                                  │  │
@@ -550,7 +550,7 @@ object PaymentSDK {
 
 **职责/特性**:
 - SDK入口、依赖注入、支付流程编排
-- 渠道注册：读取编译期生成的渠道映射，注册懒加载代理；真实渠道实例在 `pay()` 调用时反射创建
+- 渠道注册：读取编译期生成的渠道注册表，注册懒加载代理；真实渠道实例在 `pay()` 调用时由生成的工厂创建
 - 展示数据：UI 渠道名/图标依赖后端返回的 `PaymentChannelMeta`，懒代理返回占位值避免提前实例化
 
 #### 2.6.2 PaymentProcessLifecycleObserver（进程级监听）
@@ -571,7 +571,7 @@ object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
 ```
 应用启动 → PaymentSDK.init()
     ↓
-[Init] 读取编译期生成的渠道映射，注册 LazyPaymentChannel 代理（仅保存 channelId/类名，不实例化真实渠道）
+[Init] 读取编译期生成的渠道注册表，注册 LazyPaymentChannel 代理（保存 channelId + 工厂，不实例化真实渠道）
     ↓
 用户点击支付
     ↓
@@ -601,7 +601,7 @@ object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
     ↓
 [UI] 启动支付流程（进程生命周期监听）
     ↓
-[Channel] LazyPaymentChannel 在首次 pay() 时反射创建真实渠道实例 → IPaymentChannel.pay() 调起第三方APP
+[Channel] LazyPaymentChannel 在首次 pay() 时由生成的工厂创建真实渠道实例 → IPaymentChannel.pay() 调起第三方APP
     ↓
 [Lifecycle] ProcessLifecycleOwner onStop → 应用进入后台
     ↓
