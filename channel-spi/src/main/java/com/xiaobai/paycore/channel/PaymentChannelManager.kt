@@ -19,26 +19,12 @@ class PaymentChannelManager {
         channels[channel.channelId] = channel
     }
     
-    fun registerChannels(channelList: List<IPaymentChannel>) {
-        channelList.forEach { registerChannel(it) }
-    }
-    
-    fun unregisterChannel(channelId: String): IPaymentChannel? {
-        return channels.remove(channelId)
-    }
-    
     fun getChannel(channelId: String): IPaymentChannel? = channels[channelId]
     
-    fun getAllChannels(): List<IPaymentChannel> =
-        channels.values.sortedByDescending { it.priority }
+    fun getAllChannels(): List<IPaymentChannel> = channels.values.toList()
     
     fun getAvailableChannels(context: Context): List<IPaymentChannel> =
-        channels.values
-            .filter { !it.requiresApp || it.isAppInstalled(context) }
-            .sortedByDescending { it.priority }
-    
-    fun filterRegisteredChannels(channelIds: List<String>): List<IPaymentChannel> =
-        channelIds.mapNotNull { channels[it] }.sortedByDescending { it.priority }
+        channels.values.toList()
     
     fun filterAvailableChannels(
         context: Context,
@@ -46,12 +32,9 @@ class PaymentChannelManager {
     ): List<IPaymentChannel> =
         channelIds
             .mapNotNull { channels[it] }
-            .filter { !it.requiresApp || it.isAppInstalled(context) }
-            .sortedByDescending { it.priority }
+            .toList()
     
     fun isChannelRegistered(channelId: String): Boolean = channels.containsKey(channelId)
-    
-    fun getChannelCount(): Int = channels.size
     
     fun clear() {
         channels.clear()

@@ -8,7 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.xiaobai.paycore.PaymentErrorCode
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.PaymentSDK
-import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelMeta
 import com.xiaobai.paycore.data.PaymentErrorMapper
 import com.xiaobai.paycore.domain.PaymentRepository
 import com.xiaobai.paycore.domain.usecase.PaymentUseCases
@@ -19,10 +19,10 @@ import kotlinx.coroutines.launch
 
 sealed class PaymentSheetUiState {
     object Loading : PaymentSheetUiState()
-    data class ChannelsLoaded(val channels: List<IPaymentChannel>) : PaymentSheetUiState()
+    data class ChannelsLoaded(val channels: List<PaymentChannelMeta>) : PaymentSheetUiState()
     data class Empty(val message: String) : PaymentSheetUiState()
-    data class CreatingOrder(val channel: IPaymentChannel) : PaymentSheetUiState()
-    data class Paying(val channel: IPaymentChannel) : PaymentSheetUiState()
+    data class CreatingOrder(val channel: PaymentChannelMeta) : PaymentSheetUiState()
+    data class Paying(val channel: PaymentChannelMeta) : PaymentSheetUiState()
     data class Error(val failure: PaymentResult.Failed) : PaymentSheetUiState()
     data class Result(val result: PaymentResult) : PaymentSheetUiState()
 }
@@ -44,15 +44,12 @@ class PaymentSheetViewModel(
                 if (channels.isEmpty()) {
                     _uiState.value = PaymentSheetUiState.Empty("暂无可用支付方式")
                 } else {
-                    _uiState.value = PaymentSheetUiState.ChannelsLoaded(channels)
+                    _uiState.value = PaymentSheetUiState.ChannelsLoaded(
+                        channels.sortedByDescending { it.priority }
+                    )
                 }
             }.onFailure { _ ->
-                val localChannels = repository.getAvailableChannels(context)
-                if (localChannels.isEmpty()) {
-                    _uiState.value = PaymentSheetUiState.Empty("暂无可用支付方式")
-                } else {
-                    _uiState.value = PaymentSheetUiState.ChannelsLoaded(localChannels)
-                }
+                _uiState.value = PaymentSheetUiState.Empty("加载支付渠道失败")
             }
         }
     }
@@ -61,7 +58,7 @@ class PaymentSheetViewModel(
         activity: Activity,
         orderId: String,
         amount: BigDecimal,
-        channel: IPaymentChannel,
+        channel: PaymentChannelMeta,
         extraParams: Map<String, Any>
     ) {
         viewModelScope.launch {
@@ -92,6 +89,7 @@ class PaymentSheetViewModel(
                 orderId = orderId,
                 amount = amount,
                 extraParams = paymentParams,
+                channelMeta = channel,
                 onResult = { result ->
                     _uiState.value = PaymentSheetUiState.Result(result)
                 }

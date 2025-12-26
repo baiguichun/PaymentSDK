@@ -17,7 +17,7 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
 ┌───────────────────────────────────────────────────────────────────┐
 │                            应用层 (APP)                             │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │       Application: 初始化SDK、注册渠道、配置Koin              │  │
+│  │       Application: 初始化SDK、配置Koin（渠道自动发现）        │  │
 │  │       Activity/Fragment: 调用SDK、处理支付结果                │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────┘
@@ -36,10 +36,8 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
 │                        Domain Layer (domain)                       │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  PaymentRepository (Interface) - 数据访问抽象                  │  │
-│  │  - fetchPaymentChannels()                                     │  │
-│  │  - createPaymentOrder()                                       │  │
-│  │  - queryOrderStatus()                                         │  │
-│  │  - registerChannel() / getChannel()                           │  │
+│  │  - fetchPaymentChannels() / createPaymentOrder() / queryOrderStatus() │
+│  │  - 自动渠道注册 / getChannel() / 可用渠道过滤                  │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Business Use Cases - 业务逻辑封装                            │  │
@@ -60,7 +58,7 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  PaymentRepositoryImpl - Repository接口实现                   │  │
 │  │  - 调用网络服务获取数据                                         │  │
-│  │  - 管理渠道注册和查询                                           │  │
+│  │  - 读取渠道映射并注册懒加载代理，管理渠道查询                   │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  PaymentErrorMapper - 错误映射器                              │  │
@@ -87,6 +85,8 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
 │  │  Channel SPI (channel-spi)                                    │  │
 │  │  - IPaymentChannel: 渠道接口定义                              │  │
 │  │  - PaymentChannelManager: 渠道管理                            │  │
+│  │  - PaymentChannelService 注解 + KSP 处理器：生成渠道映射       │  │
+│  │  - LazyPaymentChannel: 懒加载代理，实例在 pay() 时创建         │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Core (core)                                                  │  │
@@ -243,9 +243,6 @@ object PaymentLockManager {
 interface IPaymentChannel {
     val channelId: String
     val channelName: String
-    val channelIcon: Int
-    val priority: Int
-    val requiresApp: Boolean
     
     fun isAppInstalled(context: Context): Boolean
     
@@ -523,9 +520,6 @@ object PaymentSDK {
         externalKoinApp: KoinApplication? = null  // 支持外部Koin容器
     )
     
-    fun registerChannel(channel: IPaymentChannel)
-    fun registerChannels(channels: List<IPaymentChannel>)
-    
     fun showPaymentSheet(
         activity: Activity,
         orderId: String,
@@ -554,6 +548,11 @@ object PaymentSDK {
 }
 ```
 
+**职责/特性**:
+- SDK入口、依赖注入、支付流程编排
+- 渠道注册：读取编译期生成的渠道映射，注册懒加载代理；真实渠道实例在 `pay()` 调用时反射创建
+- 展示数据：UI 渠道名/图标依赖后端返回的 `PaymentChannelMeta`，懒代理返回占位值避免提前实例化
+
 #### 2.6.2 PaymentProcessLifecycleObserver（进程级监听）
 ```kotlin
 object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
@@ -570,6 +569,10 @@ object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
 ### 3.1 支付流程（完整流程）
 
 ```
+应用启动 → PaymentSDK.init()
+    ↓
+[Init] 读取编译期生成的渠道映射，注册 LazyPaymentChannel 代理（仅保存 channelId/类名，不实例化真实渠道）
+    ↓
 用户点击支付
     ↓
 [UI] PaymentSDK.showPaymentSheet()
@@ -584,7 +587,7 @@ object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
     ↓
 [Backend] 返回可用渠道配置
     ↓
-[UI] 展示渠道列表（RadioButton选择）
+[UI] 展示渠道列表（RadioButton选择，文案/图标来源于后端返回的渠道元数据）
     ↓
 用户选择渠道 + 点击"立即支付"
     ↓
@@ -598,7 +601,7 @@ object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
     ↓
 [UI] 启动支付流程（进程生命周期监听）
     ↓
-[Channel] IPaymentChannel.pay() → 调起第三方APP
+[Channel] LazyPaymentChannel 在首次 pay() 时反射创建真实渠道实例 → IPaymentChannel.pay() 调起第三方APP
     ↓
 [Lifecycle] ProcessLifecycleOwner onStop → 应用进入后台
     ↓

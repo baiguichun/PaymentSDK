@@ -12,13 +12,8 @@ interface IPaymentChannel {
     val channelId: String
     /** 渠道展示名称 */
     val channelName: String
-    /** 渠道图标资源（可选，0 表示未提供） */
-    val channelIcon: Int get() = 0
-    /** 渠道优先级，数字越大优先级越高 */
-    val priority: Int get() = 0
-    /** 是否需要依赖第三方APP */
-    val requiresApp: Boolean get() = false
-    
+    // 渠道图标/优先级/是否依赖第三方APP 交由宿主或后端元数据处理，接口不再约束
+
     /**
      * 检查支付APP是否已安装
      */
@@ -64,6 +59,8 @@ data class PaymentChannelMeta(
     val channelId: String,
     val channelName: String,
     val enabled: Boolean,
+    val requiresApp: Boolean = false,
+    val priority: Int = 0,
     val iconUrl: String? = null,
     val extraConfig: Map<String, Any> = emptyMap()
 )

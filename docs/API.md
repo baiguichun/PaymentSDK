@@ -167,46 +167,6 @@ class MyApplication : Application() {
 
 ---
 
-#### registerChannel()
-
-注册支付渠道。
-
-```kotlin
-fun registerChannel(channel: IPaymentChannel)
-```
-
-**参数：**
-- `channel`: 支付渠道实例
-
-**示例：**
-```kotlin
-PaymentSDK.registerChannel(WeChatPayChannel())
-PaymentSDK.registerChannel(AlipayChannel())
-```
-
----
-
-#### registerChannels()
-
-批量注册支付渠道。
-
-```kotlin
-fun registerChannels(channels: List<IPaymentChannel>)
-```
-
-**参数：**
-- `channels`: 支付渠道列表
-
-**示例：**
-```kotlin
-PaymentSDK.registerChannels(listOf(
-    WeChatPayChannel(),
-    AlipayChannel(),
-    UnionPayChannel()
-))
-```
-
----
 
 #### showPaymentSheet()
 
@@ -573,10 +533,8 @@ val config = PaymentConfig.Builder()
 interface IPaymentChannel {
     val channelId: String          // 渠道唯一标识
     val channelName: String        // 渠道显示名称
-    val channelIcon: Int           // 渠道图标资源ID
-    val requiresApp: Boolean       // 是否需要第三方APP
-    val packageName: String?       // 第三方APP包名
-    val priority: Int              // 渠道优先级（默认0）
+
+    // 渠道图标/优先级/是否需要第三方APP 由后端返回的 PaymentChannelMeta 提供
 }
 ```
 
@@ -675,9 +633,9 @@ fun getSupportedFeatures(): List<PaymentFeature> {
 
 ### domain层（业务领域层）
 
-#### PaymentRepository（接口）
+#### PaymentRepository（接口，内部使用）
 
-数据访问抽象接口，定义在`domain`模块中。
+数据访问抽象接口，定义在`domain`模块中。注册相关方法由SDK内部在初始化时通过渠道映射自动调用，业务侧无需手动注册。
 
 ```kotlin
 interface PaymentRepository {
@@ -686,7 +644,7 @@ interface PaymentRepository {
     suspend fun createPaymentOrder(orderId: String, channelId: String, amount: String, extraParams: Map<String, Any>): Result<Map<String, Any>>
     suspend fun queryOrderStatus(orderId: String, paymentId: String? = null): Result<OrderStatusInfo>
     
-    // 渠道管理相关
+    // 渠道管理相关（内部自动注册/查询）
     fun registerChannel(channel: IPaymentChannel)
     fun getChannel(channelId: String): IPaymentChannel?
     fun getAllChannels(): List<IPaymentChannel>
@@ -699,6 +657,7 @@ interface PaymentRepository {
 - 只定义接口，不包含实现
 - 业务逻辑依赖此接口，不依赖具体实现
 - 便于Mock，易于测试
+- 渠道实例由 SDK 在 pay() 触发时懒加载，UI 展示的渠道名/图标请使用后端返回的渠道元数据
 
 #### UseCases（业务用例）
 
@@ -1314,9 +1273,20 @@ enum class PaymentFeature {
 class WeChatPayChannel : IPaymentChannel {
     override val channelId = "wechat_pay"
     override val channelName = "微信支付"
-    override val requiresApp = true
-    override val packageName = "com.tencent.mm"
-    override val priority = 100
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        return runCatching { context.packageManager.getPackageInfo("com.tencent.mm", 0) }.isSuccess
+    }
+
+    override fun pay(
+        context: Context,
+        orderId: String,
+        amount: BigDecimal,
+        extraParams: Map<String, Any>
+    ): PaymentResult {
+        // 调起微信SDK...
+        return PaymentResult.Success(orderId)
+    }
 }
 ```
 
@@ -1337,9 +1307,20 @@ class WeChatPayChannel : IPaymentChannel {
 class AlipayChannel : IPaymentChannel {
     override val channelId = "alipay"
     override val channelName = "支付宝"
-    override val requiresApp = true
-    override val packageName = "com.eg.android.AlipayGphone"
-    override val priority = 90
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        return runCatching { context.packageManager.getPackageInfo("com.eg.android.AlipayGphone", 0) }.isSuccess
+    }
+
+    override fun pay(
+        context: Context,
+        orderId: String,
+        amount: BigDecimal,
+        extraParams: Map<String, Any>
+    ): PaymentResult {
+        // 调起支付宝SDK...
+        return PaymentResult.Success(orderId)
+    }
 }
 ```
 
@@ -1356,9 +1337,20 @@ class AlipayChannel : IPaymentChannel {
 class UnionPayChannel : IPaymentChannel {
     override val channelId = "union_pay"
     override val channelName = "银联支付"
-    override val requiresApp = true
-    override val packageName = "com.unionpay"
-    override val priority = 80
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        return runCatching { context.packageManager.getPackageInfo("com.unionpay", 0) }.isSuccess
+    }
+
+    override fun pay(
+        context: Context,
+        orderId: String,
+        amount: BigDecimal,
+        extraParams: Map<String, Any>
+    ): PaymentResult {
+        // 调起银联SDK...
+        return PaymentResult.Success(orderId)
+    }
 }
 ```
 

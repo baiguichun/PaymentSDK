@@ -113,18 +113,11 @@ class MyApplication : Application() {
                         "api.example.com" to listOf("sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                     )
                 )
-            )
+        )
             .build()
         
         // 初始化
         PaymentSDK.init(this, config)
-        
-        // 注册已集成的支付渠道SDK
-        PaymentSDK.registerChannels(listOf(
-            WeChatPayChannel(),
-            AlipayChannel(),
-            UnionPayChannel()
-        ))
     }
 }
 ```
@@ -241,11 +234,10 @@ class MyApplication : Application() {
 ## 📦 核心组件说明
 
 ### PaymentSDK
-SDK入口类，提供初始化、渠道注册和支付流程。
+SDK入口类，提供初始化和支付流程（渠道在初始化时自动发现并注册）。
 
 **主要方法：**
 - `init()` - 初始化SDK
-- `registerChannel()` - 注册支付渠道
 - `showPaymentSheet()` - 显示支付选择弹窗
 - `payWithChannel()` - 指定渠道支付
 - `resumePendingPayment()` - 宿主在启动时拿到“未完成订单”后恢复支付流程
@@ -267,9 +259,6 @@ SDK入口类，提供初始化、渠道注册和支付流程。
 interface IPaymentChannel {
     val channelId: String
     val channelName: String
-    val channelIcon: Int
-    val requiresApp: Boolean
-    val packageName: String?
     
     // 普通函数（非suspend）
     fun pay(
@@ -337,9 +326,11 @@ val config = PaymentConfig.Builder()
 class CustomPayChannel : IPaymentChannel {
     override val channelId: String = "custom_pay"
     override val channelName: String = "自定义支付"
-    override val channelIcon: Int = R.drawable.ic_custom_pay
-    override val requiresApp: Boolean = true
-    override val packageName: String = "com.custom.pay"
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        // 如果依赖第三方APP，在此检查包名
+        return true
+    }
     
     override fun pay(
         context: Context,

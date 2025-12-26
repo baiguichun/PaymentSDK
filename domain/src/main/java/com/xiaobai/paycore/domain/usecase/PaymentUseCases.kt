@@ -1,7 +1,7 @@
 package com.xiaobai.paycore.domain.usecase
 
 import android.content.Context
-import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelMeta
 import com.xiaobai.paycore.domain.PaymentRepository
 import com.xiaobai.paycore.domain.model.OrderStatusInfo
 
@@ -18,11 +18,11 @@ class FetchChannelsUseCase(
         businessLine: String,
         appId: String,
         context: Context
-    ): Result<List<IPaymentChannel>> {
+    ): Result<List<PaymentChannelMeta>> {
         val remoteResult = repository.fetchPaymentChannels(businessLine, appId)
         return remoteResult.mapCatching { metas ->
-            val channelIds = metas.map { it.channelId }
-            repository.filterAvailableChannels(context, channelIds)
+            // 仅返回本地已注册映射的渠道，避免缺失实现
+            metas.filter { repository.getChannel(it.channelId) != null }
         }
     }
 }

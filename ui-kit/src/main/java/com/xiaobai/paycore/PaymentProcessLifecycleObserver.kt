@@ -31,6 +31,7 @@ internal object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
         channelId: String,
         amount: BigDecimal,
         extraParams: Map<String, Any>,
+        channelMeta: com.xiaobai.paycore.channel.PaymentChannelMeta? = null,
         onResult: (PaymentResult) -> Unit
     ) {
         registerIfNeeded()
@@ -49,6 +50,7 @@ internal object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
             channelId = channelId,
             amount = amount,
             extraParams = extraParams,
+            channelMeta = channelMeta,
             callback = onResult
         )
         session = newSession
@@ -89,8 +91,10 @@ internal object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
                 )
                 return
             }
-            
-            if (channel.requiresApp && !channel.isAppInstalled(context)) {
+
+            // requiresApp 为 true 时才校验安装状态
+            val requiresApp = session.channelMeta?.requiresApp ?: false
+            if (requiresApp && !channel.isAppInstalled(context)) {
                 finishSession(
                     PaymentSDK.buildFailure(
                         PaymentErrorCode.APP_NOT_INSTALLED,
@@ -100,13 +104,13 @@ internal object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
                 )
                 return
             }
-            
-            session.hasLaunchedPayment = true
-            val result = channel.pay(
-                context = context,
-                orderId = session.orderId,
-                amount = session.amount,
-                extraParams = session.extraParams
+
+        session.hasLaunchedPayment = true
+        val result = channel.pay(
+            context = context,
+            orderId = session.orderId,
+            amount = session.amount,
+            extraParams = session.extraParams
             )
             
             if (PaymentSDK.getConfig().debugMode) {
@@ -218,6 +222,7 @@ internal object PaymentProcessLifecycleObserver : DefaultLifecycleObserver {
         val channelId: String,
         val amount: BigDecimal,
         val extraParams: Map<String, Any>,
+        val channelMeta: com.xiaobai.paycore.channel.PaymentChannelMeta? = null,
         val callback: (PaymentResult) -> Unit,
         var hasLaunchedPayment: Boolean = false,
         var hasMovedToBackground: Boolean = false,

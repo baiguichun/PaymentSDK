@@ -223,7 +223,6 @@ class MyApplication : Application() {
             .build()
         
         PaymentSDK.init(this, config)
-        PaymentSDK.registerChannel(WeChatPayChannel())
     }
 }
 ```
@@ -242,7 +241,6 @@ class MyApplication : Application() {
             .build()
         
         PaymentSDK.init(this, config)
-        PaymentSDK.registerChannel(WeChatPayChannel())
     }
 }
 ```

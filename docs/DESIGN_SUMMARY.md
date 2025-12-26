@@ -49,10 +49,8 @@ payment-channel-*     # 渠道SDK（可选）
 interface IPaymentChannel {
     val channelId: String          // 渠道ID
     val channelName: String        // 渠道名称
-    val channelIcon: Int           // 渠道图标
-    val requiresApp: Boolean       // 是否需要APP
-    val packageName: String?       // APP包名
-    
+    // 展示/安装信息由后端返回的 PaymentChannelMeta 提供
+
     // 调起支付（同步方法，仅负责拉起第三方APP）
     fun pay(
         context: Context,
@@ -77,17 +75,7 @@ interface IPaymentChannel {
 
 ### 3. 渠道动态过滤
 
-支付渠道的可用性通过三层过滤确定：
-
-```
-第1层：后端配置
-    ↓ (根据业务线返回可用渠道ID列表)
-第2层：本地注册
-    ↓ (过滤出已集成的渠道SDK)
-第3层：APP安装
-    ↓ (过滤出第三方APP已安装的渠道)
-最终可用渠道
-```
+支付渠道的可用性由后端返回的渠道列表 + 本地已注册映射确定；列表展示按后端下发的 `priority` 排序，支付前如 `requiresApp=true` 会调用渠道的 `isAppInstalled()` 校验。
 
 **实现代码：**
 ```kotlin
@@ -98,7 +86,7 @@ fun filterChannels(
 ): List<IPaymentChannel> {
     return backendChannelIds
         .mapNotNull { id -> registeredChannels.find { it.channelId == id } }
-        .filter { !it.requiresApp || it.isAppInstalled(context) }
+        // 后端返回渠道优先级，列表按 priority 排序；requiresApp 由支付前校验 isAppInstalled
         .sortedByDescending { it.priority }
 }
 ```
@@ -406,8 +394,6 @@ class MyApplication : Application() {
             .build()
         
         PaymentSDK.init(this, config)
-        PaymentSDK.registerChannel(WeChatPayChannel())
-        PaymentSDK.registerChannel(AlipayChannel())
     }
 }
 ```
@@ -447,9 +433,11 @@ payment-channel-custom/
 class CustomPayChannel : IPaymentChannel {
     override val channelId = "custom_pay"
     override val channelName = "自定义支付"
-    override val channelIcon = R.drawable.ic_custom
-    override val requiresApp = true
-    override val packageName = "com.custom.pay"
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        // 如需依赖第三方APP，在此检查包名
+        return true
+    }
     
     override fun pay(
         context: Context,
@@ -461,8 +449,7 @@ class CustomPayChannel : IPaymentChannel {
     }
 }
 
-// 步骤3：注册渠道
-PaymentSDK.registerChannel(CustomPayChannel())
+// 步骤3：标注 @PaymentChannelService，构建时生成渠道映射，SDK 初始化后自动注册懒加载代理（真实渠道在 pay() 时创建）
 ```
 
 ### 2. 自定义UI

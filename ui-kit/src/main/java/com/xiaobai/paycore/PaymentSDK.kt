@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelServiceLoader
 import com.xiaobai.paycore.concurrent.PaymentLockManager
 import com.xiaobai.paycore.config.PaymentConfig
 import com.xiaobai.paycore.data.PaymentErrorMapper
@@ -54,6 +55,8 @@ object PaymentSDK {
             modules(paymentModule(config))
         }
         koin = koinApp.koin
+
+        autoRegisterServiceChannels()
         
         PaymentLockManager.setOnTimeoutCallback { orderId ->
             if (config.debugMode) {
@@ -75,17 +78,38 @@ object PaymentSDK {
             )
         }
     }
-    
-    fun registerChannel(channel: IPaymentChannel) {
-        checkInitialized()
-        repository.registerChannel(channel)
-        if (config.debugMode) {
-            println("Payment channel registered: ${channel.channelId}")
+
+    private fun autoRegisterServiceChannels() {
+        val channels = runCatching {
+            // 仅加载映射并创建懒加载代理，避免启动时实例化所有渠道
+            PaymentChannelServiceLoader.createLazyChannels(application.javaClass.classLoader)
+        }.onFailure { throwable ->
+            if (config.debugMode) {
+                println("加载支付渠道映射失败: ${throwable.message}")
+            }
+        }.getOrDefault(emptyList())
+
+        if (channels.isEmpty()) {
+            if (config.debugMode) {
+                println("未发现支付渠道映射，跳过自动注册")
+            }
+            return
         }
-    }
-    
-    fun registerChannels(channels: List<IPaymentChannel>) {
-        channels.forEach { registerChannel(it) }
+
+        val repo = repository
+        channels.forEach { channel ->
+            runCatching { repo.registerChannel(channel) }
+                .onSuccess {
+                    if (config.debugMode) {
+                        println("自动注册支付渠道: ${channel.channelId} (${channel.javaClass.name})")
+                    }
+                }
+                .onFailure { error ->
+                    if (config.debugMode) {
+                        println("跳过支付渠道 ${channel.javaClass.name}: ${error.message}")
+                    }
+                }
+        }
     }
     
     fun showPaymentSheet(
@@ -123,6 +147,7 @@ object PaymentSDK {
         orderId: String,
         amount: BigDecimal,
         extraParams: Map<String, Any> = emptyMap(),
+        channelMeta: com.xiaobai.paycore.channel.PaymentChannelMeta? = null,
         onResult: (PaymentResult) -> Unit
     ) {
         checkInitialized()
@@ -162,6 +187,7 @@ object PaymentSDK {
             channelId = channelId,
             amount = amount,
             extraParams = extraParams,
+            channelMeta = channelMeta,
             onResult = { result ->
                 PaymentLockManager.unlockOrder(orderId)
                 onResult(result)

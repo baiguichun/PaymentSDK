@@ -159,6 +159,8 @@ class PaymentApiService(
                 channelId = channelJson.getString("channelId"),
                 channelName = channelJson.getString("channelName"),
                 enabled = channelJson.getBoolean("enabled"),
+                requiresApp = channelJson.optBoolean("requiresApp", false),
+                priority = channelJson.optInt("priority", 0),
                 iconUrl = channelJson.optString("iconUrl", null),
                 extraConfig = extraConfig
             )

@@ -23,6 +23,7 @@ rootProject.name = "paymentcore"
 include(":app")
 include(":core")
 include(":channel-spi")
+include(":channel-spi-processor")
 include(":network-security")
 include(":domain")
 include(":data")

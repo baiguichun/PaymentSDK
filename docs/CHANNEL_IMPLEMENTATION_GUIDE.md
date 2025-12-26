@@ -25,21 +25,8 @@ interface IPaymentChannel {
     // 渠道唯一标识
     val channelId: String
     
-    // 渠道显示名称
+    // 渠道显示名称（UI 展示使用后端返回的 PaymentChannelMeta，懒代理返回 channelId 占位）
     val channelName: String
-    
-    // 渠道图标资源ID
-    val channelIcon: Int
-    
-    // 是否需要第三方APP
-    val requiresApp: Boolean
-    
-    // 第三方APP的包名
-    val packageName: String?
-    
-    // 渠道优先级(数字越大优先级越高)
-    val priority: Int
-        get() = 0
     
     // 执行支付(普通函数,非suspend)
     fun pay(
@@ -49,7 +36,7 @@ interface IPaymentChannel {
         extraParams: Map<String, Any>
     ): PaymentResult
     
-    // 检查APP是否已安装
+    // 检查APP是否已安装（仅 requiresApp=true 的渠道需要实现）
     fun isAppInstalled(context: Context): Boolean
 }
 ```
@@ -149,14 +136,6 @@ class WeChatPayChannel : IPaymentChannel {
     override val channelId: String = "wechat_pay"
     
     override val channelName: String = "微信支付"
-    
-    override val channelIcon: Int = R.drawable.ic_wechat_pay
-    
-    override val requiresApp: Boolean = true
-    
-    override val packageName: String = "com.tencent.mm"
-    
-    override val priority: Int = 100  // 最高优先级
     
     private var wxApi: IWXAPI? = null
     
@@ -325,14 +304,6 @@ class AlipayChannel : IPaymentChannel {
     
     override val channelName: String = "支付宝"
     
-    override val channelIcon: Int = R.drawable.ic_alipay
-    
-    override val requiresApp: Boolean = true
-    
-    override val packageName: String = "com.eg.android.AlipayGphone"
-    
-    override val priority: Int = 90
-    
     override fun pay(
         context: Context,
         orderId: String,
@@ -387,7 +358,7 @@ class AlipayChannel : IPaymentChannel {
     override fun isAppInstalled(context: Context): Boolean {
         return try {
             val packageManager = context.packageManager
-            packageManager.getPackageInfo(packageName, 0)
+            packageManager.getPackageInfo("com.eg.android.AlipayGphone", 0)
             true
         } catch (e: Exception) {
             false
@@ -461,14 +432,6 @@ class UnionPayChannel : IPaymentChannel {
     
     override val channelName: String = "银联支付"
     
-    override val channelIcon: Int = R.drawable.ic_union_pay
-    
-    override val requiresApp: Boolean = true
-    
-    override val packageName: String = "com.unionpay"
-    
-    override val priority: Int = 80
-    
     override fun pay(
         context: Context,
         orderId: String,
@@ -510,7 +473,7 @@ class UnionPayChannel : IPaymentChannel {
     override fun isAppInstalled(context: Context): Boolean {
         return try {
             val packageManager = context.packageManager
-            packageManager.getPackageInfo(packageName, 0)
+            packageManager.getPackageInfo("com.unionpay", 0)
             true
         } catch (e: Exception) {
             false
@@ -557,14 +520,6 @@ class H5PayChannel : IPaymentChannel {
     override val channelId: String = "h5_pay"
     
     override val channelName: String = "网页支付"
-    
-    override val channelIcon: Int = R.drawable.ic_h5_pay
-    
-    override val requiresApp: Boolean = false  // 不需要第三方APP
-    
-    override val packageName: String? = null
-    
-    override val priority: Int = 50
     
     override fun pay(
         context: Context,
@@ -713,32 +668,37 @@ override fun pay(...): PaymentResult {
 
 ## 注册渠道
 
-在Application中注册实现的渠道：
+### 方案1：自动注册（KSP + 渠道映射，推荐）
+
+1) 在渠道实现类上添加注解：
 
 ```kotlin
-class MyApplication : Application() {
-    override fun onCreate() {
-        super.onCreate()
-        
-        // 初始化SDK
-        val config = PaymentConfig.Builder()
-            .setAppId("your_app_id")
-            .setBusinessLine("retail")
-            .setApiBaseUrl("https://api.example.com")
-            .build()
-        
-        PaymentSDK.init(this, config)
-        
-        // 注册支付渠道
-        PaymentSDK.registerChannels(listOf(
-            WeChatPayChannel(),
-            AlipayChannel(),
-            UnionPayChannel(),
-            H5PayChannel()
-        ))
-    }
+import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelService
+
+@PaymentChannelService(channelId = "wxpay")
+class WeChatPayChannel : IPaymentChannel {
+    // ...
 }
 ```
+
+2) 在渠道模块开启 KSP，并引入处理器：
+
+```kotlin
+plugins {
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.ksp)
+}
+
+dependencies {
+    implementation(project(":channel-spi"))
+    ksp(project(":channel-spi-processor"))
+}
+```
+
+> 处理器会生成渠道映射表，`PaymentSDK.init()` 会自动注册懒加载代理，无需手动调用注册方法。
+
+> 实例化时机：SDK 只注册懒加载代理，真实渠道实例在调用 `pay()` 时通过无参构造反射创建；UI 显示的渠道名/图标请使用后端返回的渠道元数据。
 
 ---
 
@@ -783,4 +743,3 @@ override fun pay(...): PaymentResult {
 ---
 
 **最后更新**: 2025-11-24
-

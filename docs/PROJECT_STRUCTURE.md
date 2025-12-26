@@ -119,7 +119,7 @@ implementation(project(":core"))
 - `PaymentChannelMeta`: 从后端返回的渠道元数据
 
 **特点**:
-- 定义了渠道的标准能力（pay、isAppInstalled、priority等）
+- 定义了渠道的标准能力（pay、isAppInstalled）
 - 支持渠道优先级排序
 - 自动过滤未安装APP的渠道
 
@@ -226,7 +226,6 @@ implementation("com.squareup.okhttp3:okhttp:4.11.0")
 **包含内容**:
 - `PaymentSDK`: ✨ **SDK主入口类**
   - `init()`: 初始化SDK和Koin容器
-  - `registerChannel()`: 注册支付渠道
   - `showPaymentSheet()`: 显示支付渠道选择对话框
   - `payWithChannel()`: 使用指定渠道支付
   - `queryOrderStatus()`: 手动查询订单状态
@@ -329,10 +328,6 @@ class MyApplication : Application() {
         
         // 初始化SDK（可选传入外部Koin容器）
         PaymentSDK.init(this, config)
-        
-        // 注册支付渠道
-        PaymentSDK.registerChannel(WeChatPayChannel())
-        PaymentSDK.registerChannel(AlipayChannel())
     }
 }
 ```

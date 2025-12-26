@@ -17,7 +17,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.PaymentSDK
 import com.xiaobai.paycore.R
-import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelMeta
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,7 +47,7 @@ class PaymentSheetDialog(
     private lateinit var payButton: Button
     
     private var isPaymentExecuting: Boolean = false
-    private var selectedChannel: IPaymentChannel? = null
+    private var selectedChannel: PaymentChannelMeta? = null
     private val viewModel: PaymentSheetViewModel = createViewModel()
     
     private val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -190,7 +190,7 @@ class PaymentSheetDialog(
         emptyView.visibility = View.GONE
     }
     
-    private fun showChannels(channels: List<com.xiaobai.paycore.channel.IPaymentChannel>) {
+    private fun showChannels(channels: List<PaymentChannelMeta>) {
         loadingView.visibility = View.GONE
         recyclerView.visibility = View.VISIBLE
         emptyView.visibility = View.GONE
@@ -206,7 +206,7 @@ class PaymentSheetDialog(
         emptyView.findViewById<TextView>(R.id.tv_empty_message)?.text = message
     }
     
-    private fun startPayment(channel: IPaymentChannel) {
+    private fun startPayment(channel: PaymentChannelMeta) {
         if (isPaymentExecuting) {
             Toast.makeText(activity, "支付处理中，请稍候", Toast.LENGTH_SHORT).show()
             return
@@ -216,7 +216,7 @@ class PaymentSheetDialog(
         updatePayButtonState()
         
         if (PaymentSDK.getConfig().debugMode) {
-            println("开始创单和支付 - 渠道: ${channel.channelName}, 订单: $orderId, 金额: $amount")
+            println("开始创单和支付 - 渠道: ${channel.channelId}, 订单: $orderId, 金额: $amount")
         }
         
         viewModel.startPayment(

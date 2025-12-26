@@ -202,8 +202,6 @@ class MyApplication : Application() {
             .build()
         
         PaymentSDK.init(this, config)
-        PaymentSDK.registerChannel(WeChatPayChannel())
-        PaymentSDK.registerChannel(AlipayChannel())
     }
 }
 ```

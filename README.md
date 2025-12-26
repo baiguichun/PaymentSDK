@@ -86,16 +86,15 @@ class MyApplication : Application() {
                         "api.example.com" to listOf("sha256/AAAA...")
                     )
                 )
-            )
+        )
             .build()
         
         // 初始化SDK
         PaymentSDK.init(this, config)
-        
-        // 注册支付渠道
-        PaymentSDK.registerChannel(WeChatPayChannel())
-        PaymentSDK.registerChannel(AlipayChannel())
-        PaymentSDK.registerChannel(UnionPayChannel())
+
+        // 渠道发现：为渠道实现添加 @PaymentChannelService 注解并开启 KSP（ksp(project(":channel-spi-processor"))）。
+        // SDK 初始化时只注册懒加载代理，真实渠道实例会在调用 pay() 时才反射创建；
+        // 渠道名/图标请使用后端返回的渠道元数据进行展示。
     }
 }
 ```
@@ -418,9 +417,11 @@ val config = PaymentConfig.Builder()
 class MyCustomChannel : IPaymentChannel {
     override val channelId = "custom_pay"
     override val channelName = "自定义支付"
-    override val channelIcon = R.drawable.ic_custom
-    override val priority = 50
-    override val requiresApp = false
+    
+    override fun isAppInstalled(context: Context): Boolean {
+        // 如需依赖第三方APP，在此检查包名
+        return true
+    }
     
     override fun pay(
         context: Context,
@@ -440,8 +441,7 @@ class MyCustomChannel : IPaymentChannel {
     override fun isAppInstalled(context: Context): Boolean = true
 }
 
-// 注册渠道
-PaymentSDK.registerChannel(MyCustomChannel())
+// 标注注解后，KSP 会生成渠道映射，SDK 初始化时自动注册懒加载代理，真实实例在 pay() 时创建
 ```
 
 详见 [渠道实现指南](docs/CHANNEL_IMPLEMENTATION_GUIDE.md)
