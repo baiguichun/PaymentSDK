@@ -3,7 +3,8 @@ package com.xiaobai.paycore.channel
 /**
  * 渠道发现工具。
  *
- * 编译期处理器会生成静态注册表对象，运行时直接加载工厂并创建懒加载代理。
+ * 编译期处理器会生成静态注册表对象，运行时通过反射读取工厂列表并封装为懒代理，
+ * 避免在初始化阶段直接实例化具体渠道。
  */
 object PaymentChannelServiceLoader {
 

@@ -78,6 +78,7 @@ class PaymentChannelProcessor(
         return deferred
     }
 
+    // 生成静态注册表，写入 channelId + 工厂闭包，供运行时懒加载渠道实例
     private fun writeRegistry(entries: List<ChannelEntry>) {
         val dependencies = entries.dependencies()
         val objectName = "GeneratedPaymentChannelRegistry"

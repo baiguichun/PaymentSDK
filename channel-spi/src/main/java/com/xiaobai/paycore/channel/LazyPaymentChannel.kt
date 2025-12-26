@@ -1,7 +1,7 @@
 package com.xiaobai.paycore.channel
 
 /**
- * 懒加载的渠道代理：仅在第一次访问除 channelId 以外的信息时才实例化真实渠道类。
+ * 懒加载的渠道代理：通过工厂闭包 + `by lazy`，仅在第一次访问除 channelId 以外的信息时才实例化真实渠道。
  */
 class LazyPaymentChannel(
     override val channelId: String,
@@ -28,6 +28,7 @@ class LazyPaymentChannel(
         listOf(PaymentFeature.BASIC_PAY)
 
     private fun instantiateDelegate(): IPaymentChannel {
+        // 工厂闭包由 KSP 生成的注册表提供，首次访问时才真正 new 出渠道实例
         return factory.invoke()
     }
 }
