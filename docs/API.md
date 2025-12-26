@@ -635,7 +635,7 @@ fun getSupportedFeatures(): List<PaymentFeature> {
 
 #### PaymentRepository（接口，内部使用）
 
-数据访问抽象接口，定义在`domain`模块中。注册相关方法由SDK内部在初始化时通过渠道映射自动调用，业务侧无需手动注册。
+数据访问抽象接口，定义在`domain`模块中。注册相关方法由SDK在初始化时通过编译期生成的渠道注册表自动完成懒代理注册，业务侧无需手动注册。
 
 ```kotlin
 interface PaymentRepository {

@@ -117,6 +117,7 @@ import com.tencent.mm.opensdk.openapi.IWXAPI
 import com.tencent.mm.opensdk.openapi.WXAPIFactory
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelService
 import java.math.BigDecimal
 
 /**
@@ -131,6 +132,7 @@ import java.math.BigDecimal
  * - timeStamp: 时间戳
  * - sign: 签名
  */
+@PaymentChannelService(channelId = "wechat_pay")
 class WeChatPayChannel : IPaymentChannel {
     
     override val channelId: String = "wechat_pay"
@@ -417,6 +419,7 @@ import android.content.Context
 import com.unionpay.UPPayAssistEx
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelService
 import java.math.BigDecimal
 
 /**
@@ -426,6 +429,7 @@ import java.math.BigDecimal
  * - tn: 交易流水号(服务端获取)
  * - mode: 支付模式("00"表示正式环境,"01"表示测试环境)
  */
+@PaymentChannelService(channelId = "union_pay")
 class UnionPayChannel : IPaymentChannel {
     
     override val channelId: String = "union_pay"
@@ -507,6 +511,7 @@ import android.content.Intent
 import android.net.Uri
 import com.xiaobai.paycore.PaymentResult
 import com.xiaobai.paycore.channel.IPaymentChannel
+import com.xiaobai.paycore.channel.PaymentChannelService
 import java.math.BigDecimal
 
 /**
@@ -515,6 +520,7 @@ import java.math.BigDecimal
  * 需要的extraParams参数:
  * - payUrl: 支付页面URL
  */
+@PaymentChannelService(channelId = "h5_pay")
 class H5PayChannel : IPaymentChannel {
     
     override val channelId: String = "h5_pay"
@@ -668,7 +674,7 @@ override fun pay(...): PaymentResult {
 
 ## 注册渠道
 
-### 方案1：自动注册（KSP + 渠道映射，推荐）
+### 方案1：自动注册（KSP + 渠道注册表 + 懒代理，推荐）
 
 1) 在渠道实现类上添加注解：
 
@@ -698,7 +704,7 @@ dependencies {
 
 > 处理器会生成渠道注册表，`PaymentSDK.init()` 会自动注册懒加载代理，无需手动调用注册方法。
 
-> 实例化时机：SDK 只注册懒加载代理，真实渠道实例在调用 `pay()` 时由生成的工厂直接创建；UI 显示的渠道名/图标请使用后端返回的渠道元数据。
+> 实例化时机：SDK 只注册懒加载代理，真实渠道实例在调用 `pay()` 时由生成的工厂直接创建；UI 显示的渠道名/图标请使用后端返回的渠道元数据。详见 [渠道加载方案](./CHANNEL_LOADING.md) 与 [实例化流程](./CHANNEL_INSTANTIATION_FLOW.md)。
 
 ---
 
