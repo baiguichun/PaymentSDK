@@ -24,10 +24,10 @@ PaymentSDK v3.0采用**Clean Architecture**和**模块化设计**，实现了业
                                   ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │                    Presentation Layer (ui-kit)                     │
-│  ┌──────────────┐  ┌───────────────────┐  ┌───────────────────┐   │
-│  │ PaymentSDK   │  │ PaymentSheetDialog│  │PaymentLifecycle  │   │
-│  │  (SDK Entry) │  │  + ViewModel      │  │    Activity      │   │
-│  └──────────────┘  └───────────────────┘  └───────────────────┘   │
+│  ┌──────────────┐  ┌───────────────────┐  ┌────────────────────────────┐   │
+│  │ PaymentSDK   │  │ PaymentSheetDialog│  │ PaymentProcessLifecycleObs.│   │
+│  │  (SDK Entry) │  │  + ViewModel      │  │   进程级生命周期监听       │   │
+│  └──────────────┘  └───────────────────┘  └────────────────────────────┘   │
 │                                                                     │
 │  Dependencies: domain, data, network-security, channel-spi, core   │
 └───────────────────────────────────────────────────────────────────┘

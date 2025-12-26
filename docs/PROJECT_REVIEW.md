@@ -228,7 +228,7 @@ ui-kit/
 - `domain`: 业务逻辑（Repository接口、UseCases）
 - `data`: 数据访问（Repository实现、ErrorMapper）
 - `network-security`: 网络通信（Retrofit、SecuritySigner）
-- `ui-kit`: UI组件（SDK入口、Dialog、LifecycleActivity）
+- `ui-kit`: UI组件（SDK入口、Dialog、进程级生命周期监听）
 
 **收益**:
 - ✅ 模块独立，可单独测试
